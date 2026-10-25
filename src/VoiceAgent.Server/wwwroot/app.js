@@ -8,6 +8,70 @@ let connection;
 let micContext;
 let worklet;
 let mediaStream;
+
+let playCtx;
+let playbackGain;
+let nextStart = 0;
+let sources = [];
+let turnGeneration = 0;
+let turnStartedAt = 0;
+let firstAudioLogged = false;
+
+function ensurePlayback() {
+  if (playCtx) return;
+  // A separate context at the device rate: Kokoro is 24 kHz, and a 16 kHz
+  // context would cap it at 8 kHz and muffle every reply.
+  playCtx = new AudioContext();
+  playbackGain = playCtx.createGain();
+  playbackGain.connect(playCtx.destination);
+}
+
+function stopPlayback() {
+  turnGeneration++;
+  for (const src of sources) {
+    src.onended = null;   // stop() fires onended too; never report an unplayed sentence
+    try { src.stop(); } catch { /* already stopped */ }
+  }
+  sources = [];
+  nextStart = playCtx ? playCtx.currentTime : 0;
+}
+
+async function playChunk(index, wavBytes, durationMs) {
+  ensurePlayback();
+  if (playCtx.state === 'suspended') await playCtx.resume();
+
+  const bytes = wavBytes instanceof Uint8Array ? wavBytes : new Uint8Array(wavBytes);
+  const buffer = await playCtx.decodeAudioData(bytes.slice().buffer);
+
+  const generation = turnGeneration;
+  const src = playCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(playbackGain);
+
+  const startAt = Math.max(playCtx.currentTime + 0.03, nextStart);
+  nextStart = startAt + buffer.duration;
+  sources.push(src);
+
+  const leadMs = (startAt - playCtx.currentTime + (playCtx.outputLatency || 0)) * 1000;
+  setTimeout(() => {
+    if (generation !== turnGeneration) return;
+    connection.invoke('SentenceStarted', index, durationMs).catch(() => {});
+    if (!firstAudioLogged) {
+      firstAudioLogged = true;
+      note(`first audio ${Math.round(performance.now() - turnStartedAt)} ms`, 'meta');
+    }
+  }, Math.max(0, leadMs));
+
+  src.onended = () => {
+    src.onended = null;
+    const i = sources.indexOf(src);
+    if (i >= 0) sources.splice(i, 1);
+    if (generation !== turnGeneration) return;
+    connection.invoke('SentencePlayed', index).catch(() => {});
+  };
+
+  src.start(startAt);
+}
 let agentLine = null;
 
 function setState(name) {
@@ -54,6 +118,17 @@ async function connect() {
     agentLine.textContent += text;
     logEl.scrollTop = logEl.scrollHeight;
   });
+  connection.on('turnStarted', () => {
+    turnStartedAt = performance.now();
+    firstAudioLogged = false;
+  });
+  connection.on('audioChunk', (index, wav, durationMs) => {
+    playChunk(index, wav, durationMs).catch((err) => note(`playback: ${err.message || err}`));
+  });
+  connection.on('turnCancelled', (reason) => {
+    stopPlayback();
+    note(`interrupted (${reason})`, 'meta');
+  });
 
   await connection.start();
 }
@@ -83,6 +158,7 @@ async function startCapture() {
   source.connect(worklet);
 
   const rate = micContext.sampleRate;
+  ensurePlayback();
   await connection.invoke('StartSession', null, rate);
   setState('listening');
   note(`microphone at ${rate} Hz`);

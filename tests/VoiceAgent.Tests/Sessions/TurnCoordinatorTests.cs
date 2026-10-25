@@ -14,11 +14,24 @@ public class TurnCoordinatorTests
         var (c, _) = Create();
         c.BeginThinking();
         c.BeginSpeaking(0, 1200);
-        c.MarkAllSentencesDispatched();
+        c.MarkAllSentencesDispatched(1);
 
         c.SentencePlayed(0);
 
         Assert.Equal(VoiceState.Listening, c.State);
+    }
+
+    [Fact]
+    public void Playing_the_first_of_two_sentences_does_not_end_speaking()
+    {
+        var (c, _) = Create();
+        c.BeginThinking();
+        c.BeginSpeaking(0, 1200);
+        c.MarkAllSentencesDispatched(2);
+
+        c.SentencePlayed(0);
+
+        Assert.Equal(VoiceState.Speaking, c.State);
     }
 
     [Fact]
@@ -38,7 +51,7 @@ public class TurnCoordinatorTests
     {
         var (c, time) = Create();
         c.BeginSpeaking(0, 300);
-        c.MarkAllSentencesDispatched();
+        c.MarkAllSentencesDispatched(1);
 
         time.Advance(TimeSpan.FromMilliseconds(900));
 
@@ -61,7 +74,7 @@ public class TurnCoordinatorTests
     {
         var (c, time) = Create();
         c.BeginSpeaking(0, 300);
-        c.MarkAllSentencesDispatched();
+        c.MarkAllSentencesDispatched(2);
 
         time.Advance(TimeSpan.FromMilliseconds(700));
         c.SentenceStarted(1);

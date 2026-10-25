@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using VoiceAgent.Server;
+using VoiceAgent.Server.Audio;
 using VoiceAgent.Server.Contracts;
 using VoiceAgent.Server.Pipeline;
 using VoiceAgent.Server.Sessions;
@@ -18,9 +19,10 @@ public sealed class VoicePipelineTests
         var segmenter = new SpeechSegmenter(vad, new VadOptions());
         using var stt = new SttService(ModelPaths.WhisperTinyEn);
         var llm = new LlmService(new ScriptedChatClient("Sure. Here you go."));
+        var tts = new FakeTts();
         var sink = new RecordingSink();
         using var turns = new TurnCoordinator(TimeProvider.System, TimeSpan.FromMilliseconds(500));
-        var pipeline = new VoicePipeline(segmenter, stt, llm, sink, turns);
+        var pipeline = new VoicePipeline(segmenter, stt, llm, tts, sink, turns);
 
         var padded = pcm.Concat(new short[16000]).ToArray();
         foreach (var chunk in padded.Chunk(320))
@@ -34,7 +36,23 @@ public sealed class VoicePipelineTests
 
         Assert.Contains(sink.Events, e => e is AssistantDelta);
         Assert.True(turns.AllSentencesDispatched);
-        Assert.Contains(sink.Events, e => e is StateChanged { State: VoiceState.Listening });
+
+        var chunks = sink.Events.OfType<AudioChunk>().ToList();
+        // The fixture holds two utterances, so both get the scripted two-sentence reply.
+        Assert.Equal(4, chunks.Count);
+        Assert.Equal([0, 1, 0, 1], chunks.Select(c => c.Index));
+        Assert.All(chunks, c => Assert.True(c.DurationMs > 0));
+        Assert.Equal(
+            ["Sure.", "Here you go.", "Sure.", "Here you go."],
+            tts.Calls);
+
+        foreach (var chunk in chunks)
+        {
+            await pipeline.SentenceStartedAsync(chunk.Index, chunk.DurationMs);
+            await pipeline.SentencePlayedAsync(chunk.Index);
+        }
+
+        Assert.Equal(VoiceState.Listening, turns.State);
     }
 
     private sealed class RmsVad(float threshold) : IVadModel
@@ -83,6 +101,18 @@ public sealed class VoicePipelineTests
 
         public void Dispose()
         {
+        }
+    }
+
+    private sealed class FakeTts : ITtsService
+    {
+        public List<string> Calls { get; } = [];
+
+        public Task<TtsChunk> SynthesizeAsync(string text, CancellationToken ct)
+        {
+            Calls.Add(text);
+            var samples = new short[2400]; // 100 ms at 24 kHz
+            return Task.FromResult(new TtsChunk(Pcm16Wav.Wrap(samples, 24000).ToArray(), 100));
         }
     }
 

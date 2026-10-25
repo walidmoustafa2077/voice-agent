@@ -13,6 +13,9 @@ builder.Services.AddSingleton(new VoiceAgent.Server.Pipeline.LlmService(
         new Uri("http://localhost:11434"),
         "gemma4:31b-cloud")));
 
+builder.Services.AddSingleton(new Lazy<VoiceAgent.Server.Pipeline.ITtsService>(
+    () => new VoiceAgent.Server.Pipeline.TtsService(VoiceAgent.Server.ModelPaths.Kokoro)));
+
 var app = builder.Build();
 
 app.UseDefaultFiles();

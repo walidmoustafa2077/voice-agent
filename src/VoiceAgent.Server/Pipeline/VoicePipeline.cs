@@ -1,4 +1,5 @@
 using System.Text;
+using System.Threading.Channels;
 using VoiceAgent.Server.Contracts;
 using VoiceAgent.Server.Sessions;
 
@@ -8,12 +9,16 @@ public sealed class VoicePipeline(
     SpeechSegmenter segmenter,
     SttService stt,
     LlmService llm,
+    ITtsService tts,
     IVoiceEventSink sink,
     TurnCoordinator turns)
 {
     private readonly ConversationHistory _history = new();
     private readonly List<string> _sentences = [];
     private short[] _lastUtterancePcm = [];
+    private Channel<SentenceJob>? _jobs;
+
+    private readonly record struct SentenceJob(int Index, string Text);
 
     public TurnCoordinator Turns => turns;
 
@@ -63,6 +68,11 @@ public sealed class VoicePipeline(
 
         _history.AddUser(result.Text);
         _sentences.Clear();
+
+        // Synthesis runs behind the LLM stream: chunks are spoken as they are produced.
+        _jobs = Channel.CreateUnbounded<SentenceJob>(new UnboundedChannelOptions { SingleReader = true });
+        var pump = SynthesizeLoopAsync(_jobs.Reader, turns.TurnToken);
+
         var chunker = new SentenceChunker();
         var full = new StringBuilder();
 
@@ -74,22 +84,91 @@ public sealed class VoicePipeline(
                 await sink.SendAsync(new AssistantDelta(delta), ct);
 
                 foreach (var sentence in chunker.Push(delta))
-                    _sentences.Add(sentence);
+                    Enqueue(sentence);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            _jobs.Writer.TryComplete();
+            return;
+        }
+
+        var tail = chunker.Flush();
+        if (tail.Length > 0)
+            Enqueue(tail);
+
+        _jobs.Writer.TryComplete();
+
+        try
+        {
+            await pump;
         }
         catch (OperationCanceledException)
         {
             return;
         }
 
-        var tail = chunker.Flush();
-        if (tail.Length > 0)
-            _sentences.Add(tail);
-
         _history.AddAssistant(full.ToString().Trim());
-        turns.MarkAllSentencesDispatched();
 
-        await ToListeningAsync(ct);
+        if (_sentences.Count == 0)
+        {
+            await ToListeningAsync(ct);
+            return;
+        }
+
+        turns.MarkAllSentencesDispatched(_sentences.Count);
+        Console.WriteLine($"tts {_sentences.Count} sentence(s) dispatched");
+    }
+
+    private void Enqueue(string sentence)
+    {
+        var index = _sentences.Count;
+        _sentences.Add(sentence);
+        _jobs!.Writer.TryWrite(new SentenceJob(index, sentence));
+    }
+
+    private async Task SynthesizeLoopAsync(ChannelReader<SentenceJob> reader, CancellationToken ct)
+    {
+        await foreach (var job in reader.ReadAllAsync(ct))
+        {
+            TtsChunk chunk;
+            try
+            {
+                chunk = await tts.SynthesizeAsync(job.Text, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                await sink.SendAsync(new PipelineError($"tts: {ex.Message}"), ct);
+                continue;
+            }
+
+            await sink.SendAsync(new AudioChunk(job.Index, chunk.Wav, chunk.DurationMs), ct);
+        }
+    }
+
+    public async Task SentenceStartedAsync(int index, double durationMs)
+    {
+        turns.BeginSpeaking(index, durationMs);
+        await sink.SendAsync(new StateChanged(VoiceState.Speaking));
+    }
+
+    public Task SentencePlayedAsync(int index)
+    {
+        turns.SentencePlayed(index);
+        return Task.CompletedTask;
+    }
+
+    public async Task StopSpeakingAsync(string reason)
+    {
+        turns.Cancel(reason);
+        _jobs?.Writer.TryComplete();
+
+        await sink.SendAsync(new TurnCancelled(reason));
+        await sink.SendAsync(new StateChanged(VoiceState.Listening));
     }
 
     private async Task ToListeningAsync(CancellationToken ct)

@@ -14,7 +14,7 @@ public sealed class TurnCoordinator : IDisposable
     private CancellationTokenSource _cts = new();
     private ITimer? _watchdog;
     private double _lastDurationMs;
-    private int _lastPlayedIndex = -1;
+    private readonly HashSet<int> _played = [];
 
     public TurnCoordinator(TimeProvider time, TimeSpan fallbackMargin)
     {
@@ -30,6 +30,9 @@ public sealed class TurnCoordinator : IDisposable
     public int NextSentenceIndex { get; private set; }
 
     public bool AllSentencesDispatched { get; private set; }
+
+    /// <summary>How many sentences this turn's TTS produced; set when dispatch completes.</summary>
+    public int TotalSentences { get; private set; }
 
     public event Action<VoiceState>? StateChanged;
 
@@ -47,8 +50,9 @@ public sealed class TurnCoordinator : IDisposable
 
         StopWatchdog();
         AllSentencesDispatched = false;
+        TotalSentences = 0;
         NextSentenceIndex = 0;
-        _lastPlayedIndex = -1;
+        _played.Clear();
 
         SetState(VoiceState.Thinking);
     }
@@ -63,8 +67,9 @@ public sealed class TurnCoordinator : IDisposable
         if (AllSentencesDispatched) ArmWatchdog();
     }
 
-    public void MarkAllSentencesDispatched()
+    public void MarkAllSentencesDispatched(int totalSentences)
     {
+        TotalSentences = totalSentences;
         AllSentencesDispatched = true;
         if (State == VoiceState.Speaking) ArmWatchdog();
     }
@@ -73,9 +78,9 @@ public sealed class TurnCoordinator : IDisposable
 
     public void SentencePlayed(int index)
     {
-        _lastPlayedIndex = Math.Max(_lastPlayedIndex, index);
+        _played.Add(index);
 
-        if (AllSentencesDispatched && _lastPlayedIndex >= NextSentenceIndex - 1)
+        if (AllSentencesDispatched && _played.Count >= TotalSentences)
         {
             StopWatchdog();
             SetState(VoiceState.Listening);

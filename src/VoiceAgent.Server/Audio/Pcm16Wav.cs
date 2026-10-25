@@ -36,15 +36,17 @@ public static class Pcm16Wav
     public static double DurationMs(byte[] wav)
     {
         var position = 12;
+        var byteRate = 0;
         while (position + 8 <= wav.Length)
         {
             var id = Encoding.ASCII.GetString(wav, position, 4);
             var size = BitConverter.ToInt32(wav, position + 4);
+
             if (id == "fmt ")
-            {
-                var byteRate = BitConverter.ToInt32(wav, position + 16);
+                byteRate = BitConverter.ToInt32(wav, position + 16);
+            else if (id == "data")
                 return byteRate <= 0 ? 0 : size * 1000.0 / byteRate;
-            }
+
             position += 8 + size + (size % 2);
         }
         return 0;

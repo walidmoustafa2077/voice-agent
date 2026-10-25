@@ -7,7 +7,7 @@ using VoiceAgent.Server.Sessions;
 
 namespace VoiceAgent.Server.Hubs;
 
-public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, IHubContext<VoiceHub> hub) : Hub
+public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, Lazy<ITtsService> tts, IHubContext<VoiceHub> hub) : Hub
 {
     private const string SessionKey = "session";
 
@@ -30,7 +30,7 @@ public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, IHubContext<V
         var segmenter = new SpeechSegmenter(vad, new VadOptions());
         var turns = new TurnCoordinator(TimeProvider.System, TimeSpan.FromMilliseconds(500));
         var sink = new SignalRVoiceEventSink(hub, Context.ConnectionId);
-        var pipeline = new VoicePipeline(segmenter, stt.Value, llm, sink, turns);
+        var pipeline = new VoicePipeline(segmenter, stt.Value, llm, tts.Value, sink, turns);
 
         var channel = Channel.CreateBounded<short[]>(new BoundedChannelOptions(50)
         {
@@ -103,6 +103,15 @@ public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, IHubContext<V
         await Clients.Caller.SendAsync("level", Rms(pcm16k), session.Counter.FramesPerSecond);
     }
 
+    public Task SentenceStarted(int index, double durationMs) =>
+        GetSession()?.Pipeline.SentenceStartedAsync(index, durationMs) ?? Task.CompletedTask;
+
+    public Task SentencePlayed(int index) =>
+        GetSession()?.Pipeline.SentencePlayedAsync(index) ?? Task.CompletedTask;
+
+    public Task StopSpeaking() =>
+        GetSession()?.Pipeline.StopSpeakingAsync("user") ?? Task.CompletedTask;
+
     public override Task OnDisconnectedAsync(Exception? exception)
     {
         if (Context.Items.Remove(SessionKey, out var value) && value is Session session)
@@ -110,6 +119,9 @@ public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, IHubContext<V
 
         return base.OnDisconnectedAsync(exception);
     }
+
+    private Session? GetSession() =>
+        Context.Items.TryGetValue(SessionKey, out var value) && value is Session session ? session : null;
 
     private static double Rms(ReadOnlySpan<short> samples)
     {
