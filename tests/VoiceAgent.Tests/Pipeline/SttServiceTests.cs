@@ -40,6 +40,24 @@ public class SttServiceTests
         Assert.All(results, r => Assert.Contains("hello", r.Text, StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task Cancelling_mid_flight_does_not_throw_the_dispose_error()
+    {
+        var pcm = Wav.ReadPcm16(Wav.Fixture("hello.wav"));
+        using var stt = new SttService(ModelPath());
+        using var cts = new CancellationTokenSource();
+
+        var task = stt.TranscribeAsync(pcm, cts.Token);
+        await Task.Delay(50);
+        cts.Cancel();
+
+        // The processor must be disposed asynchronously: a synchronous dispose during
+        // ProcessAsync throws "Cannot dispose while processing" and turns a clean barge-in
+        // into a user-visible pipeline error.
+        var ex = await Record.ExceptionAsync(() => task);
+        Assert.True(ex is null or OperationCanceledException, $"unexpected: {ex}");
+    }
+
     private static string ModelPath()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

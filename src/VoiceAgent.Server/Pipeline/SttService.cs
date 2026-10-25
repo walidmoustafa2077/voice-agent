@@ -32,7 +32,9 @@ public sealed class SttService : ISttService, IDisposable
         {
             var stopwatch = Stopwatch.StartNew();
 
-            using var processor = _factory.CreateBuilder()
+            // DisposeAsync, not Dispose: a cancelled turn aborts ProcessAsync mid-flight, and the
+            // synchronous dispose throws "Cannot dispose while processing" in that window.
+            await using var processor = _factory.CreateBuilder()
                 .WithLanguage("en")
                 .WithThreads(_threads)
                 .WithNoSpeechThreshold(0.6f)

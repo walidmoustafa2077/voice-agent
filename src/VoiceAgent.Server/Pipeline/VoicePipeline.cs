@@ -1,5 +1,6 @@
 using System.Text;
 using VoiceAgent.Server.Contracts;
+using VoiceAgent.Server.Options;
 using VoiceAgent.Server.Sessions;
 
 namespace VoiceAgent.Server.Pipeline;
@@ -16,7 +17,9 @@ public sealed class VoicePipeline : IDisposable
     private readonly ITtsService _tts;
     private readonly IVoiceEventSink _sink;
     private readonly TurnCoordinator _turns;
-    private readonly ConversationHistory _history = new();
+    private readonly ConversationHistory _history;
+    private readonly VoiceConfig _config;
+    private readonly System.Diagnostics.Stopwatch _turnClock = new();
     private readonly List<string> _sentences = [];
     private readonly List<double> _durations = [];
     private readonly object _gate = new();
@@ -35,7 +38,8 @@ public sealed class VoicePipeline : IDisposable
         LlmService llm,
         ITtsService tts,
         IVoiceEventSink sink,
-        TurnCoordinator turns)
+        TurnCoordinator turns,
+        VoiceConfig? config = null)
     {
         _segmenter = segmenter;
         _stt = stt;
@@ -43,10 +47,14 @@ public sealed class VoicePipeline : IDisposable
         _tts = tts;
         _sink = sink;
         _turns = turns;
+        _config = config ?? new VoiceConfig();
+        _history = new ConversationHistory(_config.MaxHistoryMessages);
 
         _turns.StateChanged += state =>
         {
-            _segmenter.Threshold = state == VoiceState.Speaking ? 0.6f : 0.5f;
+            _segmenter.Threshold = state == VoiceState.Speaking
+                ? _config.SpeakingVadThreshold
+                : _config.VadThreshold;
             if (state != VoiceState.Speaking) _echoFloor.EndPlayback();
             _ = _sink.SendAsync(new StateChanged(state));
         };
@@ -180,6 +188,7 @@ public sealed class VoicePipeline : IDisposable
     private async Task HandleUtteranceAsync(short[] pcm, CancellationToken ct)
     {
         _turns.BeginThinking();
+        _turnClock.Restart();
         var turnId = _turns.TurnId;
         _userAddedThisTurn = false;
 
@@ -210,21 +219,31 @@ public sealed class VoicePipeline : IDisposable
 
         Console.WriteLine($"stt {result.LatencyMs:F0} ms: {result.Text}");
         await TrySendAsync(new Transcript(result.Text));
+        await TrySendAsync(new StageTiming("stt", result.LatencyMs));
 
         _history.AddUser(result.Text);
         _userAddedThisTurn = true;
-        var chunker = new SentenceChunker();
+        var chunker = new SentenceChunker(_config.MaxChunkChars, _config.MinChunkChars);
         var full = new StringBuilder();
         var jobs = System.Threading.Channels.Channel.CreateUnbounded<(int Index, string Text)>(
             new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
 
-        var pump = SynthesizeLoopAsync(jobs.Reader, _turns.TurnToken);
+        var pump = SynthesizeLoopAsync(
+            jobs.Reader, _turns.TurnToken, () => _turnClock.Elapsed.TotalMilliseconds);
+        var firstDelta = true;
 
         try
         {
             await foreach (var delta in _llm.StreamAsync(_history.Messages, _turns.TurnToken))
             {
                 full.Append(delta);
+
+                if (firstDelta)
+                {
+                    firstDelta = false;
+                    await TrySendAsync(new StageTiming("firstToken", _turnClock.Elapsed.TotalMilliseconds));
+                }
+
                 await TrySendAsync(new AssistantDelta(delta));
 
                 foreach (var sentence in chunker.Push(delta))
@@ -283,13 +302,23 @@ public sealed class VoicePipeline : IDisposable
 
     private async Task SynthesizeLoopAsync(
         System.Threading.Channels.ChannelReader<(int Index, string Text)> reader,
-        CancellationToken ct)
+        CancellationToken ct,
+        Func<double>? onFirstSynth = null)
     {
+        var first = true;
+
         await foreach (var (index, text) in reader.ReadAllAsync(ct))
         {
             try
             {
                 var chunk = await _tts.SynthesizeAsync(text, ct);
+
+                if (first)
+                {
+                    first = false;
+                    var ms = onFirstSynth?.Invoke() ?? 0;
+                    await TrySendAsync(new StageTiming("firstSynth", ms));
+                }
 
                 lock (_gate)
                 {

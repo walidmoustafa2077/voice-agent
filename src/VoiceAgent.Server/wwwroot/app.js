@@ -5,6 +5,16 @@ const levelEl = document.getElementById('level');
 const fpsEl = document.getElementById('fps');
 const logEl = document.getElementById('log');
 const startBtn = document.getElementById('start');
+const stopBtn = document.getElementById('stop');
+
+const hudVad = document.getElementById('hud-vad');
+const hudStt = document.getElementById('hud-stt');
+const hudToken = document.getElementById('hud-token');
+const hudSynth = document.getElementById('hud-synth');
+const hudAudio = document.getElementById('hud-audio');
+
+let vadNormal = 0.5;
+let vadSpeaking = 0.6;
 
 let connection;
 let micContext;
@@ -61,7 +71,9 @@ function ensurePlayback() {
       connection.invoke('SentenceStarted', currentTurnId, index, performance.now()).catch(() => {});
       if (!firstAudioLogged) {
         firstAudioLogged = true;
-        note(`first audio ${Math.round(performance.now() - turnStartedAt)} ms`, 'meta');
+        const elapsed = Math.round(performance.now() - turnStartedAt);
+        hudAudio.textContent = `${elapsed} ms`;
+        note(`first audio ${elapsed} ms`, 'meta');
       }
     },
     onPlayed(index) {
@@ -70,6 +82,22 @@ function ensurePlayback() {
   });
 }
 let agentLine = null;
+
+stopBtn.addEventListener('click', () => {
+  connection?.invoke('StopSpeaking').catch(() => {});
+});
+
+async function loadConfig() {
+  try {
+    const config = await (await fetch('/api/config')).json();
+    vadNormal = config.vadThreshold ?? vadNormal;
+    vadSpeaking = config.speakingVadThreshold ?? vadSpeaking;
+  } catch {
+    // The HUD is optional; the session works without it.
+  }
+}
+
+loadConfig();
 
 function setState(name) {
   stateEl.textContent = name;
@@ -105,7 +133,18 @@ async function connect() {
     fpsEl.textContent = `${fps.toFixed(0)} fps`;
   });
   connection.on('error', (message) => note(message));
-  connection.on('stateChanged', (state) => setState(String(state).toLowerCase()));
+  connection.on('stateChanged', (state) => {
+    const name = String(state).toLowerCase();
+    setState(name);
+    hudVad.textContent = (name === 'speaking' ? vadSpeaking : vadNormal).toFixed(2);
+  });
+  connection.on('stageTiming', (stage, ms) => {
+    const target = stage === 'stt' ? hudStt
+      : stage === 'firstToken' ? hudToken
+      : stage === 'firstSynth' ? hudSynth
+      : null;
+    if (target) target.textContent = `${Math.round(ms)} ms`;
+  });
   connection.on('transcript', (text) => {
     note(text, 'user');
     agentLine = null;

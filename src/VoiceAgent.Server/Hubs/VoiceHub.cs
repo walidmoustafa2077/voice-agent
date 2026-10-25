@@ -7,7 +7,12 @@ using VoiceAgent.Server.Sessions;
 
 namespace VoiceAgent.Server.Hubs;
 
-public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, Lazy<ITtsService> tts, IHubContext<VoiceHub> hub) : Hub
+public sealed class VoiceHub(
+    Lazy<SttService> stt,
+    LlmService llm,
+    Lazy<ITtsService> tts,
+    IHubContext<VoiceHub> hub,
+    VoiceAgent.Server.Options.VoiceConfigStore config) : Hub
 {
     private const string SessionKey = "session";
 
@@ -33,11 +38,18 @@ public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, Lazy<ITtsServ
         }
 
         var cts = new CancellationTokenSource();
+        var cfg = config.Current;
         var vad = new SileroVadModel(ModelPaths.SileroVad);
-        var segmenter = new SpeechSegmenter(vad, new VadOptions());
+        var segmenter = new SpeechSegmenter(vad, new VadOptions
+        {
+            Threshold = cfg.VadThreshold,
+            MinSpeechMs = cfg.MinSpeechMs,
+            MinSilenceMs = cfg.MinSilenceMs,
+            PreRollMs = cfg.PreRollMs,
+        });
         var turns = new TurnCoordinator(TimeProvider.System, TimeSpan.FromMilliseconds(500));
         var sink = new SignalRVoiceEventSink(hub, Context.ConnectionId);
-        var pipeline = new VoicePipeline(segmenter, stt.Value, llm, tts.Value, sink, turns);
+        var pipeline = new VoicePipeline(segmenter, stt.Value, llm, tts.Value, sink, turns, cfg);
 
         var channel = Channel.CreateBounded<short[]>(new BoundedChannelOptions(50)
         {

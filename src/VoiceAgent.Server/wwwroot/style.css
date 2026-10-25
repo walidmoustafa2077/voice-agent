@@ -52,6 +52,17 @@ h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: .02em; }
 .line.agent { align-self: flex-start; background: #16202b; border: 1px solid #22303f; }
 .line.note { align-self: center; font-size: 12px; color: #7d8a99; }
 
+.hud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+  color: #7d8a99;
+  border-top: 1px solid #1e252e;
+  padding-top: 8px;
+}
+.hud b { font-variant-numeric: tabular-nums; font-weight: 600; color: #b6c2cf; }
+
 footer { display: flex; align-items: center; gap: 12px; }
 .meter { flex: 1; height: 6px; background: #1b222c; border-radius: 999px; overflow: hidden; }
 .level { height: 100%; width: 0%; background: linear-gradient(90deg, #2f81f7, #57d38c); transition: width 80ms linear; }
@@ -68,3 +79,5 @@ button {
 }
 button:hover { background: #22303f; }
 button:disabled { opacity: .5; cursor: default; }
+.ghost { background: transparent; color: #8b98a5; }
+.ghost:hover { background: #1c2733; color: #e6edf3; }

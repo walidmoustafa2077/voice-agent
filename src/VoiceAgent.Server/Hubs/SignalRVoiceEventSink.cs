@@ -18,6 +18,7 @@ public sealed class SignalRVoiceEventSink(IHubContext<VoiceHub> hub, string conn
             AssistantDelta e => client.SendAsync("assistantDelta", e.Text, ct),
             AudioChunk e => client.SendAsync("audioChunk", e.Index, e.Wav, e.DurationMs, ct),
             TurnCancelled e => client.SendAsync("turnCancelled", e.Reason, ct),
+            StageTiming e => client.SendAsync("stageTiming", e.Stage, e.Ms, ct),
             PipelineError e => client.SendAsync("error", e.Message, ct),
             _ => Task.CompletedTask,
         };

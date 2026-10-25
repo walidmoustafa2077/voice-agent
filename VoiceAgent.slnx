@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/VoiceAgent.Harness/VoiceAgent.Harness.csproj" />
     <Project Path="src/VoiceAgent.Server/VoiceAgent.Server.csproj" />
   </Folder>
   <Folder Name="/tests/">

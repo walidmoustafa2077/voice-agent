@@ -9,6 +9,9 @@ public sealed record StateChanged(VoiceState State) : VoiceEvent;
 /// <summary>Sent at speech end. The client times latency from this event's arrival.</summary>
 public sealed record TurnStarted(int TurnId, DateTimeOffset At) : VoiceEvent;
 
+/// <summary>Server-side stage latency, surfaced in the HUD. One clock: the server's.</summary>
+public sealed record StageTiming(string Stage, double Ms) : VoiceEvent;
+
 public sealed record Transcript(string Text) : VoiceEvent;
 
 public sealed record AssistantDelta(string Text) : VoiceEvent;

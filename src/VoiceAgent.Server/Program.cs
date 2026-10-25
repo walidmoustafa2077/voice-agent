@@ -16,6 +16,8 @@ builder.Services.AddSingleton(new VoiceAgent.Server.Pipeline.LlmService(
 builder.Services.AddSingleton(new Lazy<VoiceAgent.Server.Pipeline.ITtsService>(
     () => new VoiceAgent.Server.Pipeline.TtsService(VoiceAgent.Server.ModelPaths.Kokoro)));
 
+builder.Services.AddSingleton<VoiceAgent.Server.Options.VoiceConfigStore>();
+
 var app = builder.Build();
 
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ModelDownloader");
@@ -30,6 +32,7 @@ foreach (var model in VoiceAgent.Server.ModelDownloader.Required)
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapHub<VoiceAgent.Server.Hubs.VoiceHub>("/hub/voice");
+VoiceAgent.Server.ConfigEndpoints.MapConfig(app);
 app.MapFallbackToFile("index.html");
 
 app.Run();

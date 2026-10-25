@@ -44,7 +44,6 @@ public sealed class SpeechSegmenter
     {
         var events = new List<SegmentEvent>();
         float maxProbability = 0;
-        var anySpeech = false;
 
         foreach (var sample in pcm)
         {
