@@ -8,6 +8,7 @@ let connection;
 let micContext;
 let worklet;
 let mediaStream;
+let agentLine = null;
 
 function setState(name) {
   stateEl.textContent = name;
@@ -44,8 +45,15 @@ async function connect() {
   });
   connection.on('error', (message) => note(message));
   connection.on('stateChanged', (state) => setState(String(state).toLowerCase()));
-  connection.on('transcript', (text) => note(text, 'user'));
-  connection.on('assistantDelta', (text) => note(text, 'agent'));
+  connection.on('transcript', (text) => {
+    note(text, 'user');
+    agentLine = null;
+  });
+  connection.on('assistantDelta', (text) => {
+    if (!agentLine) agentLine = note('', 'agent');
+    agentLine.textContent += text;
+    logEl.scrollTop = logEl.scrollHeight;
+  });
 
   await connection.start();
 }

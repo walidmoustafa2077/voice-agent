@@ -8,6 +8,11 @@ builder.Services.AddSignalR(options =>
 builder.Services.AddSingleton(new Lazy<VoiceAgent.Server.Pipeline.SttService>(
     () => new VoiceAgent.Server.Pipeline.SttService(VoiceAgent.Server.ModelPaths.WhisperTinyEn)));
 
+builder.Services.AddSingleton(new VoiceAgent.Server.Pipeline.LlmService(
+    new OllamaSharp.OllamaApiClient(
+        new Uri("http://localhost:11434"),
+        "gemma4:31b-cloud")));
+
 var app = builder.Build();
 
 app.UseDefaultFiles();

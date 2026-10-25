@@ -7,7 +7,7 @@ using VoiceAgent.Server.Sessions;
 
 namespace VoiceAgent.Server.Hubs;
 
-public sealed class VoiceHub(Lazy<SttService> stt, IHubContext<VoiceHub> hub) : Hub
+public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, IHubContext<VoiceHub> hub) : Hub
 {
     private const string SessionKey = "session";
 
@@ -30,7 +30,7 @@ public sealed class VoiceHub(Lazy<SttService> stt, IHubContext<VoiceHub> hub) : 
         var segmenter = new SpeechSegmenter(vad, new VadOptions());
         var turns = new TurnCoordinator(TimeProvider.System, TimeSpan.FromMilliseconds(500));
         var sink = new SignalRVoiceEventSink(hub, Context.ConnectionId);
-        var pipeline = new VoicePipeline(segmenter, stt.Value, sink, turns);
+        var pipeline = new VoicePipeline(segmenter, stt.Value, llm, sink, turns);
 
         var channel = Channel.CreateBounded<short[]>(new BoundedChannelOptions(50)
         {

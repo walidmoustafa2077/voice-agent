@@ -1,3 +1,4 @@
+using System.Text;
 using VoiceAgent.Server.Contracts;
 using VoiceAgent.Server.Sessions;
 
@@ -6,14 +7,19 @@ namespace VoiceAgent.Server.Pipeline;
 public sealed class VoicePipeline(
     SpeechSegmenter segmenter,
     SttService stt,
+    LlmService llm,
     IVoiceEventSink sink,
     TurnCoordinator turns)
 {
+    private readonly ConversationHistory _history = new();
+    private readonly List<string> _sentences = [];
     private short[] _lastUtterancePcm = [];
 
     public TurnCoordinator Turns => turns;
 
     public short[] LastUtterancePcm => _lastUtterancePcm;
+
+    public IReadOnlyList<string> Sentences => _sentences;
 
     public async Task PushAudioAsync(short[] pcm16k, CancellationToken ct)
     {
@@ -54,6 +60,35 @@ public sealed class VoicePipeline(
         Console.WriteLine($"stt {result.LatencyMs:F0} ms: {result.Text}");
 
         await sink.SendAsync(new Transcript(result.Text), ct);
+
+        _history.AddUser(result.Text);
+        _sentences.Clear();
+        var chunker = new SentenceChunker();
+        var full = new StringBuilder();
+
+        try
+        {
+            await foreach (var delta in llm.StreamAsync(_history.Messages, turns.TurnToken))
+            {
+                full.Append(delta);
+                await sink.SendAsync(new AssistantDelta(delta), ct);
+
+                foreach (var sentence in chunker.Push(delta))
+                    _sentences.Add(sentence);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        var tail = chunker.Flush();
+        if (tail.Length > 0)
+            _sentences.Add(tail);
+
+        _history.AddAssistant(full.ToString().Trim());
+        turns.MarkAllSentencesDispatched();
+
         await ToListeningAsync(ct);
     }
 
