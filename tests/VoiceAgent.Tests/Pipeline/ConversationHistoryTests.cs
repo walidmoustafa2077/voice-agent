@@ -42,4 +42,19 @@ public sealed class ConversationHistoryTests
 
         Assert.DoesNotContain(history.Messages, m => m.Text == "first question");
     }
+
+    [Fact]
+    public void Caps_growth_at_the_message_limit()
+    {
+        var history = new ConversationHistory();
+
+        for (var i = 0; i < 25; i++)
+        {
+            history.AddUser($"question {i}");
+            history.AddAssistant($"answer {i}");
+        }
+
+        Assert.True(history.Messages.Count <= 41, $"history grew to {history.Messages.Count}");
+        Assert.Equal("answer 24", history.Messages[^1].Text);
+    }
 }

@@ -46,6 +46,18 @@ public sealed class SentenceChunkerTests
     }
 
     [Fact]
+    public void Cuts_a_long_unbroken_token_without_throwing()
+    {
+        var chunker = new SentenceChunker();
+
+        var chunks = chunker.Push(new string('a', 120));
+
+        Assert.Single(chunks);
+        Assert.Equal(90, chunks[0].Length);
+        Assert.Equal(30, chunker.Flush().Length);
+    }
+
+    [Fact]
     public void Joins_across_deltas()
     {
         var chunker = new SentenceChunker();

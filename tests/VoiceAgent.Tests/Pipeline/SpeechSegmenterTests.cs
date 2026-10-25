@@ -50,6 +50,29 @@ public class SpeechSegmenterTests
     }
 
     [Fact]
+    public void Every_push_reports_a_decision_while_speech_continues()
+    {
+        var segmenter = new SpeechSegmenter(Speech(0, 3000), new VadOptions());
+        for (var i = 0; i < 50; i++) segmenter.Push(Frame()); // past the 250 ms confirmation
+
+        for (var i = 0; i < 20; i++)
+        {
+            var frame = segmenter.Push(Frame());
+            Assert.True(frame.IsSpeech, $"push {i} reported no speech mid-utterance");
+            Assert.True(frame.Probability > 0.9f, $"push {i} lost the last probability");
+        }
+    }
+
+    [Fact]
+    public void Preroll_is_150ms_without_duplicating_the_onset_window()
+    {
+        var events = Feed(Speech(1000, 1600), seconds: 3.0);
+
+        var pcm = events[1].Pcm!;
+        Assert.InRange(pcm.Length, 11840, 12160); // 600 ms speech + 150 ms pre-roll
+    }
+
+    [Fact]
     public void Caps_an_utterance_at_15_seconds()
     {
         var events = Feed(Speech(0, 20000), seconds: 22.0);

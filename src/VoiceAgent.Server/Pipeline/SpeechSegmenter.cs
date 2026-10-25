@@ -20,6 +20,7 @@ public sealed class SpeechSegmenter
 
     private bool _inSpeech;
     private bool _candidateActive;
+    private float _lastProbability;
     private int _speechRunMs;
     private int _silenceRunMs;
     private int _trailingSilenceSamples;
@@ -30,7 +31,7 @@ public sealed class SpeechSegmenter
     {
         _vad = vad;
         _options = options;
-        _preRollCapacity = Math.Max(0, options.PreRollMs) * 16;
+        _preRollCapacity = Math.Max(0, options.PreRollMs) * 16 + WindowSamples;
     }
 
     public float Threshold
@@ -61,14 +62,16 @@ public sealed class SpeechSegmenter
             ProcessWindow(
                 _buffer.GetRange(offset, WindowSamples).ToArray(),
                 events,
-                ref maxProbability,
-                ref anySpeech);
+                ref maxProbability);
             offset += WindowSamples;
         }
 
         if (offset > 0) _buffer.RemoveRange(0, offset);
 
-        return new SegmenterFrame(events, maxProbability, anySpeech);
+        return new SegmenterFrame(
+            events,
+            offset > 0 ? maxProbability : _lastProbability,
+            _inSpeech || _candidateActive);
     }
 
     /// <summary>Audio captured so far for the current or just-finished utterance.</summary>
@@ -93,15 +96,14 @@ public sealed class SpeechSegmenter
     private void ProcessWindow(
         short[] window,
         List<SegmentEvent> events,
-        ref float maxProbability,
-        ref bool anySpeech)
+        ref float maxProbability)
     {
         var probability = _vad.Predict(window);
         _processedSamples += WindowSamples;
+        _lastProbability = probability;
 
         maxProbability = Math.Max(maxProbability, probability);
         var isSpeech = probability >= _options.Threshold;
-        anySpeech |= isSpeech;
 
         if (!_inSpeech)
         {
@@ -117,7 +119,10 @@ public sealed class SpeechSegmenter
             {
                 _candidateActive = true;
                 _candidate.Clear();
-                _candidate.AddRange(_preRoll);
+
+                // The pre-roll already contains the current window; the last WindowSamples
+                // of it are the window itself, so seed only with what came before it.
+                _candidate.AddRange(_preRoll.Take(Math.Max(0, _preRoll.Count - WindowSamples)));
                 _speechRunMs = 0;
                 _onsetSample = _processedSamples - WindowSamples;
             }

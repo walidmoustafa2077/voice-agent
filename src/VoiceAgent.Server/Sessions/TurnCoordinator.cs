@@ -3,18 +3,21 @@ using VoiceAgent.Server.Contracts;
 namespace VoiceAgent.Server.Sessions;
 
 /// <summary>
-/// Owns the turn lifecycle for one connection: one cancellation token per turn, and a watchdog
-/// that is armed only once every sentence has been dispatched.
+/// Owns the turn lifecycle for one connection: one cancellation token per turn, a turn id that
+/// stale playback reports cannot cross, and a watchdog armed only once every sentence has been
+/// dispatched.
 /// </summary>
 public sealed class TurnCoordinator : IDisposable
 {
     private readonly TimeProvider _time;
     private readonly TimeSpan _fallbackMargin;
+    private readonly object _gate = new();
+    private readonly HashSet<int> _played = [];
+    private readonly Dictionary<int, double> _durations = [];
 
     private CancellationTokenSource _cts = new();
     private ITimer? _watchdog;
-    private double _lastDurationMs;
-    private readonly HashSet<int> _played = [];
+    private double _totalDurationMs;
 
     public TurnCoordinator(TimeProvider time, TimeSpan fallbackMargin)
     {
@@ -26,6 +29,9 @@ public sealed class TurnCoordinator : IDisposable
 
     public CancellationToken TurnToken => _cts.Token;
 
+    /// <summary>Increments on every turn; playback reports from older turns are ignored.</summary>
+    public int TurnId { get; private set; }
+
     /// <summary>Index the next dispatched sentence will carry.</summary>
     public int NextSentenceIndex { get; private set; }
 
@@ -34,95 +40,157 @@ public sealed class TurnCoordinator : IDisposable
     /// <summary>How many sentences this turn's TTS produced; set when dispatch completes.</summary>
     public int TotalSentences { get; private set; }
 
+    /// <summary>Raised on every state change, including watchdog-forced ones.</summary>
     public event Action<VoiceState>? StateChanged;
 
     public void BeginListening()
     {
-        StopWatchdog();
+        lock (_gate)
+        {
+            StopWatchdogLocked();
+        }
+
         SetState(VoiceState.Listening);
     }
 
     public void BeginThinking()
     {
-        _cts.Cancel();
-        _cts.Dispose();
-        _cts = new CancellationTokenSource();
+        CancellationTokenSource previous;
 
-        StopWatchdog();
-        AllSentencesDispatched = false;
-        TotalSentences = 0;
-        NextSentenceIndex = 0;
-        _played.Clear();
+        lock (_gate)
+        {
+            previous = _cts;
+            _cts = new CancellationTokenSource();
+            StopWatchdogLocked();
+
+            TurnId++;
+            AllSentencesDispatched = false;
+            TotalSentences = 0;
+            NextSentenceIndex = 0;
+            _played.Clear();
+            _durations.Clear();
+            _totalDurationMs = 0;
+        }
+
+        previous.Cancel();
+        previous.Dispose();
 
         SetState(VoiceState.Thinking);
     }
 
     public void BeginSpeaking(int index, double durationMs)
     {
-        NextSentenceIndex = Math.Max(NextSentenceIndex, index + 1);
-        _lastDurationMs = durationMs;
-
-        SetState(VoiceState.Speaking);
-
-        if (AllSentencesDispatched) ArmWatchdog();
-    }
-
-    public void MarkAllSentencesDispatched(int totalSentences)
-    {
-        TotalSentences = totalSentences;
-        AllSentencesDispatched = true;
-        if (State == VoiceState.Speaking) ArmWatchdog();
-    }
-
-    public void SentenceStarted(int index) => ArmWatchdogIfDispatched();
-
-    public void SentencePlayed(int index)
-    {
-        _played.Add(index);
-
-        if (AllSentencesDispatched && _played.Count >= TotalSentences)
+        lock (_gate)
         {
-            StopWatchdog();
-            SetState(VoiceState.Listening);
-            return;
+            NextSentenceIndex = Math.Max(NextSentenceIndex, index + 1);
+            _durations[index] = durationMs;
+
+            if (AllSentencesDispatched) ArmWatchdogLocked();
         }
 
-        ArmWatchdogIfDispatched();
+        SetState(VoiceState.Speaking);
+    }
+
+    public void MarkAllSentencesDispatched(int totalSentences, double totalDurationMs)
+    {
+        lock (_gate)
+        {
+            TotalSentences = totalSentences;
+            _totalDurationMs = totalDurationMs;
+            AllSentencesDispatched = true;
+
+            // Armed even while Thinking: a client that never reports a start (decode failure,
+            // dropped chunk) must not leave the session stuck there forever.
+            ArmWatchdogLocked();
+        }
+    }
+
+    public void SentenceStarted(int turnId, int index)
+    {
+        if (turnId != TurnId) return;
+
+        lock (_gate)
+        {
+            if (AllSentencesDispatched) ArmWatchdogLocked();
+        }
+    }
+
+    public void SentencePlayed(int turnId, int index)
+    {
+        if (turnId != TurnId) return;
+
+        var done = false;
+
+        lock (_gate)
+        {
+            _played.Add(index);
+
+            if (AllSentencesDispatched && _played.Count >= TotalSentences)
+            {
+                StopWatchdogLocked();
+                done = true;
+            }
+            else
+            {
+                ArmWatchdogLocked();
+            }
+        }
+
+        if (done) SetState(VoiceState.Listening);
     }
 
     public void Cancel(string reason)
     {
+        lock (_gate)
+        {
+            StopWatchdogLocked();
+        }
+
         _cts.Cancel();
-        StopWatchdog();
         SetState(VoiceState.Listening);
     }
 
     public void Dispose()
     {
-        StopWatchdog();
+        lock (_gate)
+        {
+            StopWatchdogLocked();
+        }
+
         _cts.Dispose();
     }
 
-    private void ArmWatchdogIfDispatched()
+    private double RemainingMsLocked()
     {
-        if (AllSentencesDispatched) ArmWatchdog();
+        var played = 0.0;
+        foreach (var index in _played)
+            played += _durations.GetValueOrDefault(index, 0);
+
+        return Math.Max(0, _totalDurationMs - played);
     }
 
-    private void ArmWatchdog()
+    private void ArmWatchdogLocked()
     {
-        StopWatchdog();
+        StopWatchdogLocked();
 
-        var due = TimeSpan.FromMilliseconds(_lastDurationMs + _fallbackMargin.TotalMilliseconds);
+        if (!AllSentencesDispatched) return;
+
+        var due = TimeSpan.FromMilliseconds(RemainingMsLocked() + _fallbackMargin.TotalMilliseconds);
         _watchdog = _time.CreateTimer(_ => ForceListening(), null, due, Timeout.InfiniteTimeSpan);
     }
 
     private void ForceListening()
     {
-        StopWatchdog();
+        lock (_gate)
+        {
+            StopWatchdogLocked();
+            AllSentencesDispatched = false;
+        }
+
         SetState(VoiceState.Listening);
     }
 
-    private void StopWatchdog()
+    private void StopWatchdogLocked()
     {
         _watchdog?.Dispose();
         _watchdog = null;

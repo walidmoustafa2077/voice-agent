@@ -22,8 +22,15 @@ public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, Lazy<ITtsServ
             Context.Items.Remove(SessionKey);
         }
 
-        if (!File.Exists(ModelPaths.SileroVad))
-            throw new HubException($"missing VAD model at {ModelPaths.SileroVad}");
+        foreach (var model in ModelDownloader.Required)
+        {
+            if (!model.IsReady)
+            {
+                throw new HubException(
+                    $"{model.Name} is missing or incomplete at {model.Path}. " +
+                    "Restart the server to download it, or delete the partial file and restart.");
+            }
+        }
 
         var cts = new CancellationTokenSource();
         var vad = new SileroVadModel(ModelPaths.SileroVad);
@@ -103,11 +110,11 @@ public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, Lazy<ITtsServ
         await Clients.Caller.SendAsync("level", Rms(pcm16k), session.Counter.FramesPerSecond);
     }
 
-    public Task SentenceStarted(int index, double durationMs) =>
-        GetSession()?.Pipeline.SentenceStartedAsync(index, durationMs) ?? Task.CompletedTask;
+    public Task SentenceStarted(int turnId, int index, double atMs) =>
+        GetSession()?.Pipeline.SentenceStartedAsync(turnId, index) ?? Task.CompletedTask;
 
-    public Task SentencePlayed(int index) =>
-        GetSession()?.Pipeline.SentencePlayedAsync(index) ?? Task.CompletedTask;
+    public Task SentencePlayed(int turnId, int index) =>
+        GetSession()?.Pipeline.SentencePlayedAsync(turnId, index) ?? Task.CompletedTask;
 
     public Task StopSpeaking() =>
         GetSession()?.Pipeline.StopSpeakingAsync("user") ?? Task.CompletedTask;
@@ -154,6 +161,7 @@ public sealed class VoiceHub(Lazy<SttService> stt, LlmService llm, Lazy<ITtsServ
 
         public void Dispose()
         {
+            Pipeline.Dispose();          // cancels the active turn before the models go away
             Cancellation.Cancel();
             Audio.Writer.TryComplete();
             Turns.Dispose();

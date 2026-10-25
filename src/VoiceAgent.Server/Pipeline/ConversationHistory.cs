@@ -2,15 +2,23 @@ using Microsoft.Extensions.AI;
 
 namespace VoiceAgent.Server.Pipeline;
 
-public sealed class ConversationHistory
+public sealed class ConversationHistory(int maxMessages = 40)
 {
     private readonly List<ChatMessage> _messages = [];
 
     public IReadOnlyList<ChatMessage> Messages => _messages;
 
-    public void AddUser(string text) => _messages.Add(new ChatMessage(ChatRole.User, text));
+    public void AddUser(string text)
+    {
+        _messages.Add(new ChatMessage(ChatRole.User, text));
+        Trim();
+    }
 
-    public void AddAssistant(string text) => _messages.Add(new ChatMessage(ChatRole.Assistant, text));
+    public void AddAssistant(string text)
+    {
+        _messages.Add(new ChatMessage(ChatRole.Assistant, text));
+        Trim();
+    }
 
     public void RemoveLastUser()
     {
@@ -37,5 +45,11 @@ public sealed class ConversationHistory
 
         var heard = string.Join(' ', sentences.Take(lastPlayedIndex + 1));
         _messages[^1] = new ChatMessage(ChatRole.Assistant, $"{heard} [interrupted]");
+    }
+
+    private void Trim()
+    {
+        while (_messages.Count > maxMessages)
+            _messages.RemoveAt(0);
     }
 }

@@ -53,10 +53,11 @@ public sealed class SentenceChunker(int maxChars = 90, int minChars = 20)
         var split = text.LastIndexOf(' ');
 
         if (split <= minChars)
-            split = text.Length;
+            split = Math.Min(text.Length, maxChars);
 
         _buffer.Clear();
-        _buffer.Append(text[(split + 1)..]);
+        if (split < text.Length)
+            _buffer.Append(text[(split + 1)..]);
 
         var chunk = text[..split].Trim();
         if (chunk.Length > 0)

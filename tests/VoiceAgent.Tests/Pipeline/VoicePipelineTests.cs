@@ -28,6 +28,8 @@ public sealed class VoicePipelineTests
         foreach (var chunk in padded.Chunk(320))
             await pipeline.PushAudioAsync(chunk, CancellationToken.None);
 
+        await (pipeline.CurrentTurn ?? Task.CompletedTask).WaitAsync(TimeSpan.FromSeconds(90));
+
         var transcripts = sink.Events.OfType<Transcript>().ToList();
         Assert.NotEmpty(transcripts);
         var joined = string.Join(" ", transcripts.Select(t => t.Text));
@@ -46,10 +48,12 @@ public sealed class VoicePipelineTests
             ["Sure.", "Here you go.", "Sure.", "Here you go."],
             tts.Calls);
 
-        foreach (var chunk in chunks)
+        // Only the newest turn can still change state; older turn ids are stale by design.
+        var turnId = sink.Events.OfType<TurnStarted>().Last().TurnId;
+        foreach (var chunk in chunks.Skip(2))
         {
-            await pipeline.SentenceStartedAsync(chunk.Index, chunk.DurationMs);
-            await pipeline.SentencePlayedAsync(chunk.Index);
+            await pipeline.SentenceStartedAsync(turnId, chunk.Index);
+            await pipeline.SentencePlayedAsync(turnId, chunk.Index);
         }
 
         Assert.Equal(VoiceState.Listening, turns.State);

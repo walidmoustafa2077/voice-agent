@@ -14,9 +14,9 @@ public class TurnCoordinatorTests
         var (c, _) = Create();
         c.BeginThinking();
         c.BeginSpeaking(0, 1200);
-        c.MarkAllSentencesDispatched(1);
+        c.MarkAllSentencesDispatched(1, 1200);
 
-        c.SentencePlayed(0);
+        c.SentencePlayed(c.TurnId, 0);
 
         Assert.Equal(VoiceState.Listening, c.State);
     }
@@ -27,9 +27,9 @@ public class TurnCoordinatorTests
         var (c, _) = Create();
         c.BeginThinking();
         c.BeginSpeaking(0, 1200);
-        c.MarkAllSentencesDispatched(2);
+        c.MarkAllSentencesDispatched(2, 2400);
 
-        c.SentencePlayed(0);
+        c.SentencePlayed(c.TurnId, 0);
 
         Assert.Equal(VoiceState.Speaking, c.State);
     }
@@ -39,7 +39,7 @@ public class TurnCoordinatorTests
     {
         var (c, time) = Create();
         c.BeginSpeaking(0, 300);
-        c.SentencePlayed(0);
+        c.SentencePlayed(c.TurnId, 0);
 
         time.Advance(TimeSpan.FromSeconds(5));
 
@@ -51,7 +51,7 @@ public class TurnCoordinatorTests
     {
         var (c, time) = Create();
         c.BeginSpeaking(0, 300);
-        c.MarkAllSentencesDispatched(1);
+        c.MarkAllSentencesDispatched(1, 300);
 
         time.Advance(TimeSpan.FromMilliseconds(900));
 
@@ -70,14 +70,73 @@ public class TurnCoordinatorTests
     }
 
     [Fact]
+    public void Watchdog_uses_remaining_audio_not_just_the_last_started_sentence()
+    {
+        var (c, time) = Create();
+        c.BeginThinking();
+        c.BeginSpeaking(0, 300);            // fast first sentence
+        c.MarkAllSentencesDispatched(2, 6300); // but 6 s still to come, none started yet
+
+        time.Advance(TimeSpan.FromMilliseconds(900));
+
+        Assert.Equal(VoiceState.Speaking, c.State);
+        time.Advance(TimeSpan.FromMilliseconds(6000));
+        Assert.Equal(VoiceState.Listening, c.State);
+    }
+
+    [Fact]
+    public void Thinking_without_any_playback_still_returns_to_listening()
+    {
+        var (c, time) = Create();
+        c.BeginThinking();
+        c.MarkAllSentencesDispatched(1, 0);
+
+        time.Advance(TimeSpan.FromMilliseconds(600));
+
+        Assert.Equal(VoiceState.Listening, c.State);
+    }
+
+    [Fact]
+    public void Stale_playback_from_an_earlier_turn_is_ignored()
+    {
+        var (c, _) = Create();
+        c.BeginThinking();
+        var firstTurn = c.TurnId;
+        c.BeginSpeaking(0, 1000);
+        c.MarkAllSentencesDispatched(1, 1000);
+
+        c.BeginThinking();
+        c.BeginSpeaking(0, 1000);
+        c.MarkAllSentencesDispatched(1, 1000);
+
+        c.SentencePlayed(firstTurn, 0);
+
+        Assert.Equal(VoiceState.Speaking, c.State);
+    }
+
+    [Fact]
+    public void Watchdog_transition_is_announced()
+    {
+        var (c, time) = Create();
+        var states = new List<VoiceState>();
+        c.StateChanged += states.Add;
+
+        c.BeginThinking();
+        c.MarkAllSentencesDispatched(0, 0);
+        time.Advance(TimeSpan.FromMilliseconds(600));
+
+        Assert.Equal(VoiceState.Listening, states[^1]);
+    }
+
+    [Fact]
     public void SentenceStarted_resets_the_watchdog()
     {
         var (c, time) = Create();
         c.BeginSpeaking(0, 300);
-        c.MarkAllSentencesDispatched(2);
+        c.MarkAllSentencesDispatched(2, 2300);
 
         time.Advance(TimeSpan.FromMilliseconds(700));
-        c.SentenceStarted(1);
+        c.SentenceStarted(c.TurnId, 1);
         time.Advance(TimeSpan.FromMilliseconds(600));
 
         Assert.Equal(VoiceState.Speaking, c.State);

@@ -13,7 +13,7 @@ public sealed class SignalRVoiceEventSink(IHubContext<VoiceHub> hub, string conn
         var task = evt switch
         {
             StateChanged e => client.SendAsync("stateChanged", e.State.ToString().ToLowerInvariant(), ct),
-            TurnStarted e => client.SendAsync("turnStarted", e.At.ToUnixTimeMilliseconds(), ct),
+            TurnStarted e => client.SendAsync("turnStarted", e.TurnId, e.At.ToUnixTimeMilliseconds(), ct),
             Transcript e => client.SendAsync("transcript", e.Text, ct),
             AssistantDelta e => client.SendAsync("assistantDelta", e.Text, ct),
             AudioChunk e => client.SendAsync("audioChunk", e.Index, e.Wav, e.DurationMs, ct),

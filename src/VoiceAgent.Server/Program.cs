@@ -18,8 +18,18 @@ builder.Services.AddSingleton(new Lazy<VoiceAgent.Server.Pipeline.ITtsService>(
 
 var app = builder.Build();
 
+var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ModelDownloader");
+using var models = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+
+foreach (var model in VoiceAgent.Server.ModelDownloader.Required)
+{
+    await VoiceAgent.Server.ModelDownloader.EnsureAsync(
+        model, models, logger, CancellationToken.None);
+}
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapHub<VoiceAgent.Server.Hubs.VoiceHub>("/hub/voice");
+app.MapFallbackToFile("index.html");
 
 app.Run();

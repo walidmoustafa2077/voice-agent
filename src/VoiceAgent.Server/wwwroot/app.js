@@ -1,3 +1,5 @@
+import { createPlayback } from './playback.js';
+
 const stateEl = document.getElementById('state');
 const levelEl = document.getElementById('level');
 const fpsEl = document.getElementById('fps');
@@ -11,9 +13,8 @@ let mediaStream;
 
 let playCtx;
 let playbackGain;
-let nextStart = 0;
-let sources = [];
-let turnGeneration = 0;
+let playback;
+let currentTurnId = 0;
 let turnStartedAt = 0;
 let firstAudioLogged = false;
 
@@ -24,53 +25,21 @@ function ensurePlayback() {
   playCtx = new AudioContext();
   playbackGain = playCtx.createGain();
   playbackGain.connect(playCtx.destination);
-}
 
-function stopPlayback() {
-  turnGeneration++;
-  for (const src of sources) {
-    src.onended = null;   // stop() fires onended too; never report an unplayed sentence
-    try { src.stop(); } catch { /* already stopped */ }
-  }
-  sources = [];
-  nextStart = playCtx ? playCtx.currentTime : 0;
-}
-
-async function playChunk(index, wavBytes, durationMs) {
-  ensurePlayback();
-  if (playCtx.state === 'suspended') await playCtx.resume();
-
-  const bytes = wavBytes instanceof Uint8Array ? wavBytes : new Uint8Array(wavBytes);
-  const buffer = await playCtx.decodeAudioData(bytes.slice().buffer);
-
-  const generation = turnGeneration;
-  const src = playCtx.createBufferSource();
-  src.buffer = buffer;
-  src.connect(playbackGain);
-
-  const startAt = Math.max(playCtx.currentTime + 0.03, nextStart);
-  nextStart = startAt + buffer.duration;
-  sources.push(src);
-
-  const leadMs = (startAt - playCtx.currentTime + (playCtx.outputLatency || 0)) * 1000;
-  setTimeout(() => {
-    if (generation !== turnGeneration) return;
-    connection.invoke('SentenceStarted', index, durationMs).catch(() => {});
-    if (!firstAudioLogged) {
-      firstAudioLogged = true;
-      note(`first audio ${Math.round(performance.now() - turnStartedAt)} ms`, 'meta');
-    }
-  }, Math.max(0, leadMs));
-
-  src.onended = () => {
-    src.onended = null;
-    const i = sources.indexOf(src);
-    if (i >= 0) sources.splice(i, 1);
-    if (generation !== turnGeneration) return;
-    connection.invoke('SentencePlayed', index).catch(() => {});
-  };
-
-  src.start(startAt);
+  playback = createPlayback({
+    ctx: playCtx,
+    gain: playbackGain,
+    onStarted(index) {
+      connection.invoke('SentenceStarted', currentTurnId, index, performance.now()).catch(() => {});
+      if (!firstAudioLogged) {
+        firstAudioLogged = true;
+        note(`first audio ${Math.round(performance.now() - turnStartedAt)} ms`, 'meta');
+      }
+    },
+    onPlayed(index) {
+      connection.invoke('SentencePlayed', currentTurnId, index).catch(() => {});
+    },
+  });
 }
 let agentLine = null;
 
@@ -118,15 +87,18 @@ async function connect() {
     agentLine.textContent += text;
     logEl.scrollTop = logEl.scrollHeight;
   });
-  connection.on('turnStarted', () => {
+  connection.on('turnStarted', (turnId) => {
+    currentTurnId = turnId;
     turnStartedAt = performance.now();
     firstAudioLogged = false;
   });
   connection.on('audioChunk', (index, wav, durationMs) => {
-    playChunk(index, wav, durationMs).catch((err) => note(`playback: ${err.message || err}`));
+    ensurePlayback();
+    if (playCtx.state === 'suspended') playCtx.resume();
+    playback.enqueue(index, wav, durationMs);
   });
   connection.on('turnCancelled', (reason) => {
-    stopPlayback();
+    playback?.flush();
     note(`interrupted (${reason})`, 'meta');
   });
 
