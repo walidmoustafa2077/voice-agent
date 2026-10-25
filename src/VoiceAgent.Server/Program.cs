@@ -37,8 +37,16 @@ _ = Task.Run(async () =>
     try
     {
         var ttsWarm = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.ITtsService>>().Value;
-        _ = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.SttService>>().Value;
+        var sttWarm = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.SttService>>().Value;
         await ttsWarm.SynthesizeAsync("Ready.", CancellationToken.None);
+
+        // Constructing SttService only loads the model; Whisper's first inference is the real
+        // cost. Silence is short-circuited before Whisper runs, so feed a short non-silent tone.
+        var tone = new short[16000];
+        for (var i = 0; i < tone.Length; i++)
+            tone[i] = (short)(6000 * Math.Sin(2 * Math.PI * 220 * i / 16000.0));
+        await sttWarm.TranscribeAsync(tone, CancellationToken.None);
+
         warmupLog.LogInformation("speech models warm");
     }
     catch (Exception ex)

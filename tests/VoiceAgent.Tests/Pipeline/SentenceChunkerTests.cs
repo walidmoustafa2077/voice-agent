@@ -23,7 +23,7 @@ public sealed class SentenceChunkerTests
     }
 
     [Fact]
-    public void Flushes_the_first_chunk_early_at_a_word_boundary()
+    public void Flushes_at_the_cap_without_punctuation()
     {
         var chunker = new SentenceChunker();
         var text = string.Join(' ', Enumerable.Repeat("word", 24)); // 119 chars, no terminator
@@ -31,22 +31,18 @@ public sealed class SentenceChunkerTests
         var chunks = chunker.Push(text);
 
         Assert.NotEmpty(chunks);
-        Assert.True(chunks[0].Length <= 36, $"first chunk was {chunks[0].Length} chars");
-        Assert.DoesNotContain("  ", chunks[0]);
+        Assert.All(chunks, c => Assert.True(c.Length <= 90, $"chunk was {c.Length} chars"));
         Assert.NotEmpty(chunker.Flush());
     }
 
     [Fact]
-    public void Flushes_at_the_cap_after_the_first_chunk()
+    public void Does_not_split_before_a_complete_sentence()
     {
         var chunker = new SentenceChunker();
-        _ = chunker.Push(string.Join(' ', Enumerable.Repeat("word", 12))); // consume the first chunk
-        var text = string.Join(' ', Enumerable.Repeat("word", 24));       // 119 chars, no terminator
+        var sentence = "This is the first complete sentence.";
 
-        var chunks = chunker.Push(text);
-
-        Assert.NotEmpty(chunks);
-        Assert.All(chunks, c => Assert.True(c.Length <= 90, $"chunk was {c.Length} chars"));
+        Assert.Empty(chunker.Push("This is the first "));
+        Assert.Equal([sentence], chunker.Push("complete sentence."));
     }
 
     [Fact]
@@ -66,10 +62,9 @@ public sealed class SentenceChunkerTests
 
         var chunks = chunker.Push(new string('a', 120));
 
-        Assert.NotEmpty(chunks);
-        Assert.Equal(36, chunks[0].Length);
-        Assert.All(chunks, c => Assert.True(c.Length <= 90));
-        Assert.Equal(84, chunker.Flush().Length);
+        Assert.Single(chunks);
+        Assert.Equal(90, chunks[0].Length);
+        Assert.Equal(30, chunker.Flush().Length);
     }
 
     [Fact]

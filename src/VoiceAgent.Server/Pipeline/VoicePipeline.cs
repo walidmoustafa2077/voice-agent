@@ -38,6 +38,14 @@ public sealed class VoicePipeline : IDisposable
     private bool _assistantAddedThisTurn;
     private bool _dropUtterance;
     private bool _disposed;
+
+    // Per-turn measurements. Reset at turn start, read by LogTurn in the turn's finally.
+    private double _audioSeconds;
+    private double _sttWallMs;
+    private double _ttsWallMs;
+    private double _synthAudioMs;
+    private int _firstChunkChars;
+    private int _cancelledThisTurn;
     private readonly BargeInGate _bargeIn = new(250);
     private readonly EchoFloorGate _echoFloor = new();
 
@@ -151,6 +159,11 @@ public sealed class VoicePipeline : IDisposable
                 {
                     pcm = [.. _mergeBase, .. pcm];
                     _mergeBase = null;
+
+                    // A merge may not exceed what the segmenter itself would ever emit; keeping
+                    // the tail preserves the newest request and bounds the Whisper input.
+                    if (pcm.Length > SpeechSegmenter.MaxUtteranceSamples)
+                        pcm = pcm[^SpeechSegmenter.MaxUtteranceSamples..];
                 }
 
                 if (_turnTask is { IsCompleted: false })
@@ -220,7 +233,6 @@ public sealed class VoicePipeline : IDisposable
         _turns.BeginThinking();
         _turnClock.Restart();
         var turnId = _turns.TurnId;
-        var ct = _turns.TurnToken;
 
         lock (_gate)
         {
@@ -230,7 +242,29 @@ public sealed class VoicePipeline : IDisposable
             _userAddedThisTurn = false;
             _transcriptSentThisTurn = false;
             _assistantAddedThisTurn = false;
+
+            // One machine-readable latency line per turn, measured from TurnStarted.
+            _audioSeconds = pcm.Length / 16000.0;
+            _sttWallMs = 0;
+            _ttsWallMs = 0;
+            _synthAudioMs = 0;
+            _firstChunkChars = 0;
+            _cancelledThisTurn = 0;
         }
+
+        try
+        {
+            await RunUtteranceAsync(pcm, turnId, sessionCt);
+        }
+        finally
+        {
+            LogTurn(turnId);
+        }
+    }
+
+    private async Task RunUtteranceAsync(short[] pcm, int turnId, CancellationToken sessionCt)
+    {
+        var ct = _turns.TurnToken;
 
         await TrySendAsync(new TurnStarted(turnId, DateTimeOffset.UtcNow));
 
@@ -246,13 +280,13 @@ public sealed class VoicePipeline : IDisposable
 
         if (ct.IsCancellationRequested) return;
 
+        _sttWallMs = result.LatencyMs;
+
         if (result.Text.Length == 0)
         {
             _turns.BeginListening();
             return;
         }
-
-        Console.WriteLine($"stt {result.LatencyMs:F0} ms: {result.Text}");
 
         // Marked and checked under the lock so a merge either sees the bubble (and removes it)
         // or cancels before anything is sent.
@@ -377,7 +411,19 @@ public sealed class VoicePipeline : IDisposable
         {
             try
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 var chunk = await _tts.SynthesizeAsync(text, ct);
+                sw.Stop();
+
+                lock (_gate)
+                {
+                    _ttsWallMs += sw.Elapsed.TotalMilliseconds;
+                    _synthAudioMs += chunk.DurationMs;
+                    if (index == 0) _firstChunkChars = text.Length;
+
+                    if (index < _durations.Count)
+                        _durations[index] = chunk.DurationMs;
+                }
 
                 if (ct.IsCancellationRequested) return;
 
@@ -386,12 +432,6 @@ public sealed class VoicePipeline : IDisposable
                     first = false;
                     var ms = onFirstSynth?.Invoke() ?? 0;
                     await TrySendAsync(new StageTiming("firstSynth", ms));
-                }
-
-                lock (_gate)
-                {
-                    if (index < _durations.Count)
-                        _durations[index] = chunk.DurationMs;
                 }
 
                 await TrySendAsync(new AudioChunk(turnId, index, chunk.Wav, chunk.DurationMs));
@@ -446,6 +486,10 @@ public sealed class VoicePipeline : IDisposable
     private TurnCancelled CancelTurn(string reason, bool merge, bool keepUtterance = true)
     {
         var wasSpeaking = _turns.State == VoiceState.Speaking;
+
+        // Recorded before the turn token is cancelled so the unwinding turn's finally sees it.
+        lock (_gate) _cancelledThisTurn++;
+
         var (turnId, lastPlayed) = _turns.Cancel(reason);
 
         string? heard = null;
@@ -488,6 +532,35 @@ public sealed class VoicePipeline : IDisposable
         }
 
         return new TurnCancelled(turnId, reason, lastPlayed, heard, removeUser);
+    }
+
+    /// <summary>
+    /// One line per turn, so the stage costs can be read without guessing. RTF is wall time over
+    /// the audio actually processed: utterance seconds for STT, synthesized seconds for TTS.
+    /// </summary>
+    private void LogTurn(int turnId)
+    {
+        double audio, stt, tts, synthMs;
+        int chunks, firstChars, cancels;
+
+        lock (_gate)
+        {
+            audio = _audioSeconds;
+            stt = _sttWallMs;
+            tts = _ttsWallMs;
+            synthMs = _synthAudioMs;
+            chunks = _sentences.Count;
+            firstChars = _firstChunkChars;
+            cancels = _cancelledThisTurn;
+        }
+
+        var sttRtf = audio > 0.05 ? stt / (audio * 1000) : 0;
+        var ttsRtf = synthMs > 0.05 ? tts / synthMs : 0;
+
+        Console.WriteLine(
+            $"turn {turnId} audio={audio:F1}s stt={stt:F0}ms ({sttRtf:F2}x) " +
+            $"tts={tts:F0}ms ({ttsRtf:F2}x) chunks={chunks} firstChunk={firstChars} " +
+            $"cancelled={cancels}");
     }
 
     private async Task SendStateSafeAsync(VoiceEvent evt)
