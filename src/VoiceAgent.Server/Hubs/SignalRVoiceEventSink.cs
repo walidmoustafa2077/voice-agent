@@ -12,12 +12,14 @@ public sealed class SignalRVoiceEventSink(IHubContext<VoiceHub> hub, string conn
         var client = hub.Clients.Client(connectionId);
         var task = evt switch
         {
-            StateChanged e => client.SendAsync("stateChanged", e.State.ToString().ToLowerInvariant(), ct),
+            StateChanged e => client.SendAsync("stateChanged",
+                e.State.ToString().ToLowerInvariant(), e.VadThreshold, ct),
             TurnStarted e => client.SendAsync("turnStarted", e.TurnId, e.At.ToUnixTimeMilliseconds(), ct),
-            Transcript e => client.SendAsync("transcript", e.Text, ct),
-            AssistantDelta e => client.SendAsync("assistantDelta", e.Text, ct),
-            AudioChunk e => client.SendAsync("audioChunk", e.Index, e.Wav, e.DurationMs, ct),
-            TurnCancelled e => client.SendAsync("turnCancelled", e.Reason, ct),
+            Transcript e => client.SendAsync("transcript", e.TurnId, e.Text, ct),
+            AssistantDelta e => client.SendAsync("assistantDelta", e.TurnId, e.Text, ct),
+            AudioChunk e => client.SendAsync("audioChunk", e.TurnId, e.Index, e.Wav, e.DurationMs, ct),
+            TurnCancelled e => client.SendAsync("turnCancelled",
+                e.TurnId, e.Reason, e.LastPlayedIndex, e.HeardText, e.RemoveLastUser, ct),
             StageTiming e => client.SendAsync("stageTiming", e.Stage, e.Ms, ct),
             PipelineError e => client.SendAsync("error", e.Message, ct),
             _ => Task.CompletedTask,

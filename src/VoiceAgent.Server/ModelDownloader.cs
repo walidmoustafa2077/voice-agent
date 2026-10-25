@@ -23,7 +23,7 @@ public static class ModelDownloader
     public static ModelFile Kokoro { get; } = new(
         "Kokoro",
         "https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro.onnx",
-        ModelPaths.Kokoro, 300_000_000);
+        ModelPaths.Kokoro, ModelPaths.KokoroMinBytes);
 
     public static IReadOnlyList<ModelFile> Required { get; } = [Silero, Whisper, Kokoro];
 

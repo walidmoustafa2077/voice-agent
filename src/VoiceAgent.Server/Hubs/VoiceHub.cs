@@ -23,8 +23,8 @@ public sealed class VoiceHub(
 
         if (Context.Items.TryGetValue(SessionKey, out var existing) && existing is Session previous)
         {
-            previous.Dispose();
             Context.Items.Remove(SessionKey);
+            await previous.DisposeAsync();
         }
 
         foreach (var model in ModelDownloader.Required)
@@ -90,7 +90,7 @@ public sealed class VoiceHub(
 
         Context.Items[SessionKey] = session;
 
-        await Clients.Caller.SendAsync("stateChanged", "listening");
+        await Clients.Caller.SendAsync("stateChanged", "listening", cfg.VadThreshold);
         return Guid.NewGuid().ToString("N");
     }
 
@@ -131,12 +131,12 @@ public sealed class VoiceHub(
     public Task StopSpeaking() =>
         GetSession()?.Pipeline.StopSpeakingAsync("user") ?? Task.CompletedTask;
 
-    public override Task OnDisconnectedAsync(Exception? exception)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
         if (Context.Items.Remove(SessionKey, out var value) && value is Session session)
-            session.Dispose();
+            await session.DisposeAsync();
 
-        return base.OnDisconnectedAsync(exception);
+        await base.OnDisconnectedAsync(exception);
     }
 
     private Session? GetSession() =>
@@ -157,8 +157,10 @@ public sealed class VoiceHub(
         return Math.Sqrt(sum / samples.Length);
     }
 
-    private sealed class Session : IDisposable
+    private sealed class Session : IAsyncDisposable
     {
+        private int _closed;
+
         public required int MicSampleRate { get; init; }
         public required string? SystemPrompt { get; init; }
         public required StreamingResampler Resampler { get; init; }
@@ -171,14 +173,40 @@ public sealed class VoiceHub(
         public required CancellationTokenSource Cancellation { get; init; }
         public Task? Pump { get; set; }
 
-        public void Dispose()
+        /// <summary>
+        /// Cancels everything, waits briefly for the pump and the detached turn to leave the
+        /// models, then disposes. Disposing the VAD under an active Predict can fault the ONNX
+        /// session; the wait is bounded so a stuck native call cannot hold the connection open.
+        /// </summary>
+        public async ValueTask DisposeAsync()
         {
+            if (Interlocked.Exchange(ref _closed, 1) != 0)
+                return;
+
             Pipeline.Dispose();          // cancels the active turn before the models go away
             Cancellation.Cancel();
             Audio.Writer.TryComplete();
+
+            await WaitQuietAsync(Pump);
+            await WaitQuietAsync(Pipeline.CurrentTurn);
+
             Turns.Dispose();
             Vad.Dispose();
             Cancellation.Dispose();
+        }
+
+        private static async Task WaitQuietAsync(Task? task)
+        {
+            if (task is null) return;
+
+            try
+            {
+                await task.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+            catch
+            {
+                // Cancellation, a timeout, or a turn fault: disposal must still complete.
+            }
         }
     }
 }

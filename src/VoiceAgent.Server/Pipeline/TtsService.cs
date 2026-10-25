@@ -21,9 +21,8 @@ public sealed class TtsService : ITtsService, IDisposable
 
     public TtsService(string modelPath, int threads = 4)
     {
-        const long minimumBytes = 300L * 1024 * 1024;
         var length = File.Exists(modelPath) ? new FileInfo(modelPath).Length : 0;
-        if (length < minimumBytes)
+        if (length < ModelPaths.KokoroMinBytes)
         {
             throw new InvalidOperationException(
                 $"kokoro.onnx is incomplete or missing ({length / (1024 * 1024)} MB of ~320 MB). " +

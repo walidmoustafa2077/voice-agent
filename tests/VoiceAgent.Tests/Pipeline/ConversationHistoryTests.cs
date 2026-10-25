@@ -54,7 +54,7 @@ public sealed class ConversationHistoryTests
             history.AddAssistant($"answer {i}");
         }
 
-        Assert.True(history.Messages.Count <= 41, $"history grew to {history.Messages.Count}");
+        Assert.True(history.Messages.Count <= 40, $"history grew to {history.Messages.Count}");
         Assert.Equal("answer 24", history.Messages[^1].Text);
     }
 }

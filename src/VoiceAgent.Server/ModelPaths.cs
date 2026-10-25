@@ -10,9 +10,11 @@ public static class ModelPaths
 
     public static string Kokoro => Path.Combine(Root, "kokoro.onnx");
 
-    /// <summary>True only when the model file is large enough to be the real 320 MB download.</summary>
+    /// <summary>Minimum size that can be the real ~320 MB Kokoro download.</summary>
+    public const long KokoroMinBytes = 300L * 1024 * 1024;
+
     public static bool KokoroReady =>
-        File.Exists(Kokoro) && new FileInfo(Kokoro).Length >= 300L * 1024 * 1024;
+        File.Exists(Kokoro) && new FileInfo(Kokoro).Length >= KokoroMinBytes;
 
     private static string FindRoot()
     {

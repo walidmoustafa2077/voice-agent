@@ -11,6 +11,9 @@ namespace VoiceAgent.Server.Pipeline;
 /// </summary>
 public sealed class VoicePipeline : IDisposable
 {
+    private static readonly TimeSpan MergeWindow = TimeSpan.FromSeconds(5);
+    private const int PendingLimit = 2;
+
     private readonly SpeechSegmenter _segmenter;
     private readonly ISttService _stt;
     private readonly LlmService _llm;
@@ -19,16 +22,22 @@ public sealed class VoicePipeline : IDisposable
     private readonly TurnCoordinator _turns;
     private readonly ConversationHistory _history;
     private readonly VoiceConfig _config;
+    private readonly TimeProvider _time;
     private readonly System.Diagnostics.Stopwatch _turnClock = new();
     private readonly List<string> _sentences = [];
     private readonly List<double> _durations = [];
+    private readonly Queue<short[]> _pending = new();
     private readonly object _gate = new();
 
     private Task? _turnTask;
-    private short[]? _pendingPcm;
     private short[] _lastUtterancePcm = [];
     private short[]? _mergeBase;
+    private long _mergeAt;
     private bool _userAddedThisTurn;
+    private bool _transcriptSentThisTurn;
+    private bool _assistantAddedThisTurn;
+    private bool _dropUtterance;
+    private bool _disposed;
     private readonly BargeInGate _bargeIn = new(250);
     private readonly EchoFloorGate _echoFloor = new();
 
@@ -39,7 +48,8 @@ public sealed class VoicePipeline : IDisposable
         ITtsService tts,
         IVoiceEventSink sink,
         TurnCoordinator turns,
-        VoiceConfig? config = null)
+        VoiceConfig? config = null,
+        TimeProvider? time = null)
     {
         _segmenter = segmenter;
         _stt = stt;
@@ -48,6 +58,7 @@ public sealed class VoicePipeline : IDisposable
         _sink = sink;
         _turns = turns;
         _config = config ?? new VoiceConfig();
+        _time = time ?? TimeProvider.System;
         _history = new ConversationHistory(_config.MaxHistoryMessages);
 
         _turns.StateChanged += state =>
@@ -56,7 +67,7 @@ public sealed class VoicePipeline : IDisposable
                 ? _config.SpeakingVadThreshold
                 : _config.VadThreshold;
             if (state != VoiceState.Speaking) _echoFloor.EndPlayback();
-            _ = _sink.SendAsync(new StateChanged(state));
+            _ = SendStateSafeAsync(new StateChanged(state, _segmenter.Threshold));
         };
     }
 
@@ -74,6 +85,9 @@ public sealed class VoicePipeline : IDisposable
         get { lock (_gate) return [.. _sentences]; }
     }
 
+    /// <summary>Snapshot for tests; the client never sees this directly.</summary>
+    public IReadOnlyList<Microsoft.Extensions.AI.ChatMessage> History => _history.Messages;
+
     /// <summary>Exposed so tests can await the detached turn.</summary>
     public Task? CurrentTurn
     {
@@ -82,6 +96,8 @@ public sealed class VoicePipeline : IDisposable
 
     public Task PushAudioAsync(short[] pcm16k, CancellationToken ct)
     {
+        if (_disposed) return Task.CompletedTask;
+
         var frame = _segmenter.Push(pcm16k);
         var state = _turns.State;
 
@@ -101,13 +117,36 @@ public sealed class VoicePipeline : IDisposable
 
         foreach (var evt in frame.Events)
         {
-            if (evt.IsStart || evt.Pcm is null || evt.Pcm.Length == 0)
-                continue;
+            // Start events carry no PCM; they only mark onset.
+            if (evt.IsStart)
+            {
+                lock (_gate)
+                {
+                    if (_mergeBase is not null && _time.GetElapsedTime(_mergeAt) > MergeWindow)
+                        _mergeBase = null;
 
-            var pcm = evt.Pcm;
+                    // A segment that starts while the agent is speaking is either its own echo
+                    // or a blip too short to barge in. Only a confirmed barge-in may turn it
+                    // into a user turn; drop it when it ends instead.
+                    _dropUtterance = state == VoiceState.Speaking;
+                }
+
+                continue;
+            }
+
+            if (evt.Pcm is null || evt.Pcm.Length == 0)
+                continue;
 
             lock (_gate)
             {
+                if (_dropUtterance)
+                {
+                    _dropUtterance = false;
+                    continue;
+                }
+
+                var pcm = evt.Pcm;
+
                 if (_mergeBase is not null)
                 {
                     pcm = [.. _mergeBase, .. pcm];
@@ -116,7 +155,8 @@ public sealed class VoicePipeline : IDisposable
 
                 if (_turnTask is { IsCompleted: false })
                 {
-                    _pendingPcm = pcm;
+                    if (_pending.Count >= PendingLimit) _pending.Dequeue();
+                    _pending.Enqueue(pcm);
                     continue;
                 }
 
@@ -135,20 +175,8 @@ public sealed class VoicePipeline : IDisposable
     private Task HandleBargeInAsync(VoiceState state)
     {
         var merge = state == VoiceState.Thinking;
-
-        if (merge)
-        {
-            lock (_gate)
-            {
-                _mergeBase = _lastUtterancePcm;
-            }
-
-            if (_userAddedThisTurn)
-                _history.RemoveLastUser();
-        }
-
-        _turns.Cancel(merge ? "merge" : "barge");
-        return TrySendAsync(new TurnCancelled(merge ? "merge" : "barge"));
+        var cancelled = CancelTurn(merge ? "merge" : "barge", merge);
+        return TrySendAsync(cancelled);
     }
 
     private async Task RunTurnsAsync(short[] first, CancellationToken ct)
@@ -170,13 +198,13 @@ public sealed class VoicePipeline : IDisposable
             catch (Exception ex)
             {
                 await TrySendAsync(new PipelineError($"turn failed: {ex.Message}"));
-                _turns.Cancel("error");
+                var cancelled = CancelTurn("error", merge: false, keepUtterance: false);
+        await TrySendAsync(cancelled);
             }
 
             lock (_gate)
             {
-                pcm = _pendingPcm;
-                _pendingPcm = null;
+                pcm = _pending.Count > 0 ? _pending.Dequeue() : null;
 
                 // Released under the lock so the next utterance cannot be appended to a loop
                 // that has already decided to exit.
@@ -185,18 +213,23 @@ public sealed class VoicePipeline : IDisposable
         }
     }
 
-    private async Task HandleUtteranceAsync(short[] pcm, CancellationToken ct)
+    private async Task HandleUtteranceAsync(short[] pcm, CancellationToken sessionCt)
     {
+        if (_disposed) return;
+
         _turns.BeginThinking();
         _turnClock.Restart();
         var turnId = _turns.TurnId;
-        _userAddedThisTurn = false;
+        var ct = _turns.TurnToken;
 
         lock (_gate)
         {
             _lastUtterancePcm = pcm;
             _sentences.Clear();
             _durations.Clear();
+            _userAddedThisTurn = false;
+            _transcriptSentThisTurn = false;
+            _assistantAddedThisTurn = false;
         }
 
         await TrySendAsync(new TurnStarted(turnId, DateTimeOffset.UtcNow));
@@ -204,12 +237,14 @@ public sealed class VoicePipeline : IDisposable
         SttResult result;
         try
         {
-            result = await _stt.TranscribeAsync(pcm, _turns.TurnToken);
+            result = await _stt.TranscribeAsync(pcm, ct);
         }
         catch (OperationCanceledException)
         {
             return;
         }
+
+        if (ct.IsCancellationRequested) return;
 
         if (result.Text.Length == 0)
         {
@@ -218,25 +253,42 @@ public sealed class VoicePipeline : IDisposable
         }
 
         Console.WriteLine($"stt {result.LatencyMs:F0} ms: {result.Text}");
-        await TrySendAsync(new Transcript(result.Text));
+
+        // Marked and checked under the lock so a merge either sees the bubble (and removes it)
+        // or cancels before anything is sent.
+        lock (_gate)
+        {
+            if (ct.IsCancellationRequested) return;
+            _transcriptSentThisTurn = true;
+        }
+
+        await TrySendAsync(new Transcript(turnId, result.Text));
         await TrySendAsync(new StageTiming("stt", result.LatencyMs));
 
-        _history.AddUser(result.Text);
-        _userAddedThisTurn = true;
+        lock (_gate)
+        {
+            if (ct.IsCancellationRequested) return;
+
+            _history.AddUser(result.Text);
+            _userAddedThisTurn = true;
+        }
+
         var chunker = new SentenceChunker(_config.MaxChunkChars, _config.MinChunkChars);
         var full = new StringBuilder();
         var jobs = System.Threading.Channels.Channel.CreateUnbounded<(int Index, string Text)>(
             new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
 
         var pump = SynthesizeLoopAsync(
-            jobs.Reader, _turns.TurnToken, () => _turnClock.Elapsed.TotalMilliseconds);
+            jobs.Reader, turnId, ct, () => _turnClock.Elapsed.TotalMilliseconds);
         var firstDelta = true;
 
         try
         {
-            await foreach (var delta in _llm.StreamAsync(_history.Messages, _turns.TurnToken))
+            await foreach (var delta in _llm.StreamAsync(_history.Messages, ct))
             {
                 full.Append(delta);
+
+                if (ct.IsCancellationRequested) break;
 
                 if (firstDelta)
                 {
@@ -244,7 +296,7 @@ public sealed class VoicePipeline : IDisposable
                     await TrySendAsync(new StageTiming("firstToken", _turnClock.Elapsed.TotalMilliseconds));
                 }
 
-                await TrySendAsync(new AssistantDelta(delta));
+                await TrySendAsync(new AssistantDelta(turnId, delta));
 
                 foreach (var sentence in chunker.Push(delta))
                     Enqueue(jobs.Writer, sentence);
@@ -264,6 +316,8 @@ public sealed class VoicePipeline : IDisposable
         jobs.Writer.TryComplete();
         await pump;
 
+        if (ct.IsCancellationRequested) return;
+
         double total;
         int count;
 
@@ -273,15 +327,26 @@ public sealed class VoicePipeline : IDisposable
             total = _durations.Sum();
         }
 
+        var text = full.ToString().Trim();
+
+        lock (_gate)
+        {
+            if (ct.IsCancellationRequested) return;
+
+            if (text.Length > 0)
+            {
+                _history.AddAssistant(text);
+                _assistantAddedThisTurn = true;
+            }
+        }
+
         if (count == 0)
         {
-            _history.AddAssistant(full.ToString().Trim());
             _turns.BeginListening();
             return;
         }
 
-        _history.AddAssistant(full.ToString().Trim());
-        _turns.MarkAllSentencesDispatched(count, total);
+        _turns.MarkAllSentencesDispatched(turnId, count, total);
     }
 
     private void Enqueue(
@@ -302,6 +367,7 @@ public sealed class VoicePipeline : IDisposable
 
     private async Task SynthesizeLoopAsync(
         System.Threading.Channels.ChannelReader<(int Index, string Text)> reader,
+        int turnId,
         CancellationToken ct,
         Func<double>? onFirstSynth = null)
     {
@@ -312,6 +378,8 @@ public sealed class VoicePipeline : IDisposable
             try
             {
                 var chunk = await _tts.SynthesizeAsync(text, ct);
+
+                if (ct.IsCancellationRequested) return;
 
                 if (first)
                 {
@@ -326,7 +394,7 @@ public sealed class VoicePipeline : IDisposable
                         _durations[index] = chunk.DurationMs;
                 }
 
-                await TrySendAsync(new AudioChunk(index, chunk.Wav, chunk.DurationMs));
+                await TrySendAsync(new AudioChunk(turnId, index, chunk.Wav, chunk.DurationMs));
             }
             catch (OperationCanceledException)
             {
@@ -350,8 +418,9 @@ public sealed class VoicePipeline : IDisposable
             duration = index >= 0 && index < _durations.Count ? _durations[index] : 0;
         }
 
-        _turns.BeginSpeaking(index, duration);
-        _echoFloor.BeginPlayback();
+        // BeginPlayback runs inside the coordinator lock, so calibration cannot start for a
+        // report that a concurrent cancel has just invalidated.
+        _turns.SentenceStarted(turnId, index, duration, _echoFloor.BeginPlayback);
         return Task.CompletedTask;
     }
 
@@ -363,8 +432,74 @@ public sealed class VoicePipeline : IDisposable
 
     public async Task StopSpeakingAsync(string reason)
     {
-        _turns.Cancel(reason);
-        await TrySendAsync(new TurnCancelled(reason));
+        if (_turns.State is VoiceState.Listening or VoiceState.Idle)
+            return;
+
+        var cancelled = CancelTurn(reason, merge: false, keepUtterance: false);
+        await TrySendAsync(cancelled);
+    }
+
+    /// <summary>
+    /// Cancels the active turn and captures what was actually heard before the coordinator
+    /// resets its played set. Also trims history to the heard boundary.
+    /// </summary>
+    private TurnCancelled CancelTurn(string reason, bool merge, bool keepUtterance = true)
+    {
+        var wasSpeaking = _turns.State == VoiceState.Speaking;
+        var (turnId, lastPlayed) = _turns.Cancel(reason);
+
+        string? heard = null;
+        bool removeUser;
+
+        lock (_gate)
+        {
+            removeUser = merge && _transcriptSentThisTurn;
+
+            if (merge)
+            {
+                if (_userAddedThisTurn) _history.RemoveLastUser();
+                _mergeBase = _lastUtterancePcm.Length > 0 ? _lastUtterancePcm : null;
+                _mergeAt = _time.GetTimestamp();
+            }
+            else
+            {
+                _mergeBase = null;
+            }
+
+            var sentences = _sentences.ToArray();
+
+            if (lastPlayed >= 0 && sentences.Length > 0)
+            {
+                heard = string.Join(' ', sentences.Take(Math.Min(lastPlayed + 1, sentences.Length)));
+            }
+
+            // Only trim if this turn actually added its assistant message; otherwise the last
+            // assistant message belongs to an earlier turn.
+            if (_assistantAddedThisTurn)
+                _history.TruncateLastAssistant(sentences, lastPlayed);
+
+            _assistantAddedThisTurn = false;
+            _userAddedThisTurn = false;
+            _transcriptSentThisTurn = false;
+
+            // A manual stop while speaking should not turn an in-flight echo segment into a new
+            // turn. A confirmed barge-in is the opposite: that open segment is the user's.
+            _dropUtterance = !keepUtterance && wasSpeaking;
+        }
+
+        return new TurnCancelled(turnId, reason, lastPlayed, heard, removeUser);
+    }
+
+    private async Task SendStateSafeAsync(VoiceEvent evt)
+    {
+        try
+        {
+            await _sink.SendAsync(evt, CancellationToken.None);
+        }
+        catch
+        {
+            // A closing connection must not fault the state machine.
+        }
     }
 
     private async Task TrySendAsync(VoiceEvent evt)
@@ -381,6 +516,13 @@ public sealed class VoicePipeline : IDisposable
 
     public void Dispose()
     {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _pending.Clear();
+        }
+
         _turns.Cancel("dispose");
     }
 }

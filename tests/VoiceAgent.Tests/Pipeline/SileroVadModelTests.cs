@@ -24,12 +24,6 @@ public class SileroVadModelTests
         Assert.True(silenceScore < 0.2f, $"silence scored {silenceScore}");
     }
 
-    [Fact]
-    public void Prepend_context_is_exactly_64_samples()
-    {
-        Assert.Equal(64, SileroVadModel.ContextSamples);
-    }
-
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

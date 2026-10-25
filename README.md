@@ -32,7 +32,7 @@ dotnet run --project src/VoiceAgent.Server
 ```
 
 On startup the server downloads the three speech models into `models/` if they are missing
-(about 400 MB total: Silero VAD, Whisper `tiny.en`, Kokoro). Progress is logged to the console.
+(about 400 MB total: Silero VAD, Whisper `tiny.en`, Kokoro). It logs each file as it finishes.
 Downloads go to `*.part` files and are only moved into place after they pass a minimum-size
 sanity check, so a killed download cannot poison later runs.
 
@@ -61,17 +61,24 @@ testing the cancel path.
 While the agent is speaking, sustained speech for 250 ms triggers a barge-in: the server cancels
 the LLM stream, drops queued audio, and starts listening on a new turn. The browser also ducks
 playback immediately on loud local audio, so the round trip is not audible. The echo floor is
-calibrated from the first 200 ms of each sentence to avoid the agent interrupting itself.
+calibrated from the first 200 ms of each reply to avoid the agent interrupting itself.
+
+A segment that starts while the agent is speaking but never reaches 250 ms (the agent's own echo,
+a cough) is discarded instead of becoming a turn. Tune `speakingVadThreshold` up if your speakers
+leak enough to trigger it.
 
 If you start talking while it is still *thinking*, the new speech is merged with the pending
 utterance into a single transcript and a single LLM call.
 
 ## Latency expectations
 
-On a CPU-only machine expect roughly **0.8–2 s from the end of your sentence to the first sound**,
-plus whatever the remote model takes to produce its first token. Whisper `tiny.en` and Kokoro are
-the local costs; the LLM is usually the largest and most variable one. Nothing is streamed before
-the first sentence is complete, so very slow first tokens are felt directly.
+On a CPU-only machine the local stages dominate. Measured on the development machine with a cold
+Whisper model: ~3.8 s for STT on a 3 s utterance, then another few seconds for the first Kokoro
+chunk; the first sound arrived about 9.7 s after speech end. With warm models and a short reply,
+budget roughly **1.5–4 s from the end of your sentence to the first sound**, plus whatever the
+remote model takes to produce its first token. Whisper `tiny.en` and Kokoro are the local costs;
+the LLM is usually the largest and most variable one. Nothing is streamed before the first
+sentence is complete, so very slow first tokens are felt directly.
 
 If it feels sluggish, check the HUD to see which stage is responsible before changing anything.
 
@@ -107,21 +114,26 @@ each stage event and the transcript, and exits when the turn finishes.
 dotnet run --project src/VoiceAgent.Harness -- tests/VoiceAgent.Tests/Fixtures/hello.wav --no-audio
 ```
 
-Any sample rate and channel count is accepted; the harness resamples to 16 kHz mono with the same
-streaming resampler the server uses. The transcript for a given file should match what the browser
-produces for the same audio. `--no-audio` is accepted today for forward compatibility; the harness
-prints events only and does not play the reply.
+Any sample rate and channel count is accepted, but rates below about 14 kHz lose treble content:
+the resampler's anti-alias filter cuts off at 7 kHz. The harness resamples to 16 kHz mono with the
+same streaming resampler the server uses. The transcript for a given file should match what the
+browser produces for the same audio. `--no-audio` is accepted today for forward compatibility; the
+harness prints events only and does not play the reply.
 
 ## Tests
 
 ```bash
 dotnet test
-node --test tests/js/playback.test.mjs
+node --test tests/js/playback.test.mjs tests/js/ducking.test.mjs
 ```
 
-The .NET suite covers the resampler, VAD/segmenter, turn state machine, chunking, history, barge-in
-and the end-to-end pipeline. The Node tests cover the browser playback queue (ordering, cancel,
-generation guards). Integration tests that need the Kokoro model are skipped until it is present.
+The .NET suite covers the resampler, VAD/segmenter, turn state machine, chunking, history,
+barge-in, cancellation boundaries and the end-to-end pipeline. The Node tests cover the browser
+playback queue (ordering, cancel, generation guards) and the ducking controller (120 ms hold,
+350 ms restore, cancel stays silent).
+
+Tests that need the Kokoro model return quietly when it is not downloaded yet, so a fresh clone
+reports them as passed rather than skipped.
 
 ## Layout
 

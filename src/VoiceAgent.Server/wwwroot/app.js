@@ -1,4 +1,5 @@
 import { createPlayback } from './playback.js';
+import { createDucking } from './ducking.js';
 
 const stateEl = document.getElementById('state');
 const levelEl = document.getElementById('level');
@@ -19,13 +20,12 @@ let vadSpeaking = 0.6;
 let connection;
 let micContext;
 let worklet;
+let sourceNode;
 let mediaStream;
 
 let playCtx;
 let playbackGain;
-let lastAudioAt = 0;
-let ducked = false;
-let restoreTimer = null;
+let playbackStartedThisTurn = false;
 
 function rmsOf(samples) {
   let sum = 0;
@@ -33,28 +33,28 @@ function rmsOf(samples) {
   return Math.sqrt(sum / samples.length);
 }
 
-// Energy-only ducking: no network round trip, no model. The server's cancel is what actually
-// stops speech; this just takes the edge off during the round trip.
-function maybeDuck(level) {
-  if (!playbackGain || !playCtx || playCtx.state !== 'running') return;
-  if (performance.now() - lastAudioAt > 15000) return;
-  if (level < 0.03) return;
-
-  if (!ducked) {
-    ducked = true;
+const ducking = createDucking({
+  onDuck() {
+    if (!playbackGain || !playCtx) return;
     playbackGain.gain.setTargetAtTime(0, playCtx.currentTime, 0.01); // ~30 ms to silence
-  }
+  },
+  onRestore() {
+    if (!playbackGain || !playCtx) return;
+    playbackGain.gain.setTargetAtTime(1, playCtx.currentTime, 0.027); // ~80 ms
+  },
+  onSilence() {
+    if (!playbackGain || !playCtx) return;
+    playbackGain.gain.cancelScheduledValues(playCtx.currentTime);
+    playbackGain.gain.setValueAtTime(0, playCtx.currentTime);
+  },
+});
 
-  clearTimeout(restoreTimer);
-  restoreTimer = setTimeout(() => {
-    ducked = false;
-    if (playbackGain) playbackGain.gain.setTargetAtTime(1, playCtx.currentTime, 0.027); // ~80 ms
-  }, 350);
-}
 let playback;
 let currentTurnId = 0;
 let turnStartedAt = 0;
 let firstAudioLogged = false;
+let agentLine = null;
+let lastUserLine = null;
 
 function ensurePlayback() {
   if (playCtx) return;
@@ -68,6 +68,7 @@ function ensurePlayback() {
     ctx: playCtx,
     gain: playbackGain,
     onStarted(index) {
+      if (currentTurnId === null) return;
       connection.invoke('SentenceStarted', currentTurnId, index, performance.now()).catch(() => {});
       if (!firstAudioLogged) {
         firstAudioLogged = true;
@@ -77,11 +78,11 @@ function ensurePlayback() {
       }
     },
     onPlayed(index) {
+      if (currentTurnId === null) return;
       connection.invoke('SentencePlayed', currentTurnId, index).catch(() => {});
     },
   });
 }
-let agentLine = null;
 
 stopBtn.addEventListener('click', () => {
   connection?.invoke('StopSpeaking').catch(() => {});
@@ -123,6 +124,11 @@ function toPcm16(float32) {
 }
 
 async function connect() {
+  if (connection) {
+    await connection.stop().catch(() => {});
+    connection = null;
+  }
+
   connection = new signalR.HubConnectionBuilder()
     .withUrl('/hub/voice')
     .withHubProtocol(new signalR.protocols.msgpack.MessagePackHubProtocol())
@@ -133,10 +139,13 @@ async function connect() {
     fpsEl.textContent = `${fps.toFixed(0)} fps`;
   });
   connection.on('error', (message) => note(message));
-  connection.on('stateChanged', (state) => {
+  connection.on('stateChanged', (state, threshold) => {
     const name = String(state).toLowerCase();
     setState(name);
-    hudVad.textContent = (name === 'speaking' ? vadSpeaking : vadNormal).toFixed(2);
+    const live = Number(threshold);
+    hudVad.textContent = (Number.isFinite(live)
+      ? live
+      : (name === 'speaking' ? vadSpeaking : vadNormal)).toFixed(2);
   });
   connection.on('stageTiming', (stage, ms) => {
     const target = stage === 'stt' ? hudStt
@@ -145,11 +154,13 @@ async function connect() {
       : null;
     if (target) target.textContent = `${Math.round(ms)} ms`;
   });
-  connection.on('transcript', (text) => {
-    note(text, 'user');
+  connection.on('transcript', (turnId, text) => {
+    if (turnId !== currentTurnId) return;
+    lastUserLine = note(text, 'user');
     agentLine = null;
   });
-  connection.on('assistantDelta', (text) => {
+  connection.on('assistantDelta', (turnId, text) => {
+    if (turnId !== currentTurnId) return;
     if (!agentLine) agentLine = note('', 'agent');
     agentLine.textContent += text;
     logEl.scrollTop = logEl.scrollHeight;
@@ -158,58 +169,112 @@ async function connect() {
     currentTurnId = turnId;
     turnStartedAt = performance.now();
     firstAudioLogged = false;
+    playbackStartedThisTurn = false;
+    agentLine = null;
+    ducking.end();
   });
-  connection.on('audioChunk', (index, wav, durationMs) => {
+  connection.on('audioChunk', (turnId, index, wav, durationMs) => {
+    if (turnId !== currentTurnId) return;
+
     ensurePlayback();
     if (playCtx.state === 'suspended') playCtx.resume();
-    lastAudioAt = performance.now();
-    clearTimeout(restoreTimer);
-    ducked = false;
-    playbackGain.gain.setValueAtTime(1, playCtx.currentTime);
+
+    if (!playbackStartedThisTurn) {
+      playbackStartedThisTurn = true;
+      playbackGain.gain.cancelScheduledValues(playCtx.currentTime);
+      playbackGain.gain.setValueAtTime(1, playCtx.currentTime);
+      ducking.beginPlayback(performance.now());
+    }
+
     playback.enqueue(index, wav, durationMs);
   });
-  connection.on('turnCancelled', (reason) => {
-    clearTimeout(restoreTimer);
-    ducked = true;
-    lastAudioAt = 0;
-    if (playbackGain) playbackGain.gain.setValueAtTime(0, playCtx.currentTime);
+  connection.on('turnCancelled', (turnId, reason, lastPlayedIndex, heardText, removeLastUser) => {
+    if (turnId !== currentTurnId) return;
+
+    ducking.cancel();
     playback?.flush();
+    playbackStartedThisTurn = false;
+
+    if (agentLine) {
+      if (heardText) {
+        agentLine.textContent = `${heardText} [interrupted]`;
+      } else {
+        agentLine.remove();
+      }
+      agentLine = null;
+    }
+
+    if (removeLastUser && lastUserLine) {
+      lastUserLine.remove();
+      lastUserLine = null;
+    }
+
     note(`interrupted (${reason})`, 'meta');
+
+    // Anything still in flight for this turn (a transcript or delta sent just before/after the
+    // cancel) must not land in the next turn's UI.
+    currentTurnId = null;
   });
 
   await connection.start();
 }
 
+async function stopCapture() {
+  worklet?.disconnect();
+  worklet = null;
+  sourceNode?.disconnect();
+  sourceNode = null;
+  mediaStream?.getTracks().forEach((track) => track.stop());
+  mediaStream = null;
+
+  if (micContext) {
+    await micContext.close().catch(() => {});
+    micContext = null;
+  }
+}
+
 async function startCapture() {
   startBtn.disabled = true;
 
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-      channelCount: 1,
-    },
-  });
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+    });
 
-  micContext = new AudioContext({ sampleRate: 16000 });
-  await micContext.audioWorklet.addModule('pcm-worklet.js');
+    micContext = new AudioContext({ sampleRate: 16000 });
+    await micContext.audioWorklet.addModule('pcm-worklet.js');
 
-  const source = micContext.createMediaStreamSource(mediaStream);
-  worklet = new AudioWorkletNode(micContext, 'pcm-capture');
-  worklet.port.onmessage = (event) => {
-    if (!connection || connection.state !== signalR.HubConnectionState.Connected) return;
-    const bytes = toPcm16(event.data);
-    maybeDuck(rmsOf(event.data));
-    connection.invoke('SendAudio', bytes).catch((err) => console.error(err));
-  };
-  source.connect(worklet);
+    sourceNode = micContext.createMediaStreamSource(mediaStream);
+    worklet = new AudioWorkletNode(micContext, 'pcm-capture');
+    worklet.port.onmessage = (event) => {
+      if (!connection || connection.state !== signalR.HubConnectionState.Connected) return;
+      const bytes = toPcm16(event.data);
+      ducking.observe(rmsOf(event.data), performance.now());
+      connection.invoke('SendAudio', bytes).catch((err) => console.error(err));
+    };
 
-  const rate = micContext.sampleRate;
-  ensurePlayback();
-  await connection.invoke('StartSession', null, rate);
-  setState('listening');
-  note(`microphone at ${rate} Hz`);
+    // An AudioWorkletNode whose output is not connected can be culled by Chromium, so its
+    // process() (and therefore all capture) stops. Pull it with a silent sink.
+    const sink = micContext.createGain();
+    sink.gain.value = 0;
+    sink.connect(micContext.destination);
+    sourceNode.connect(worklet);
+    worklet.connect(sink);
+
+    const rate = micContext.sampleRate;
+    ensurePlayback();
+    await connection.invoke('StartSession', null, rate);
+    setState('listening');
+    note(`microphone at ${rate} Hz`);
+  } catch (err) {
+    await stopCapture();
+    throw err;
+  }
 }
 
 startBtn.addEventListener('click', async () => {
@@ -218,6 +283,9 @@ startBtn.addEventListener('click', async () => {
     await startCapture();
   } catch (err) {
     startBtn.disabled = false;
+    await stopCapture();
+    await connection?.stop().catch(() => {});
+    connection = null;
     note(`could not start: ${err.message || err}`);
   }
 });

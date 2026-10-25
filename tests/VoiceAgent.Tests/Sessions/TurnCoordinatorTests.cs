@@ -181,6 +181,62 @@ public class TurnCoordinatorTests
         Assert.Equal([VoiceState.Listening, VoiceState.Thinking, VoiceState.Speaking], states);
     }
 
+    [Fact]
+    public void Cancel_is_a_turn_boundary_and_late_reports_are_ignored()
+    {
+        var (c, _) = Create();
+        c.BeginThinking();
+        var cancelledTurn = c.TurnId;
+        c.BeginSpeaking(0, 1000);
+        c.MarkAllSentencesDispatched(1, 1000);
+
+        var (reportedTurn, lastPlayed) = c.Cancel("user");
+
+        Assert.Equal(cancelledTurn, reportedTurn);
+        Assert.Equal(-1, lastPlayed);
+        Assert.Equal(VoiceState.Listening, c.State);
+        Assert.NotEqual(cancelledTurn, c.TurnId);
+
+        // Every report for the dead turn is rejected, including one that would otherwise
+        // resurrect Speaking with no watchdog armed.
+        Assert.False(c.SentenceStarted(cancelledTurn, 0, 1000));
+        c.SentencePlayed(cancelledTurn, 0);
+        Assert.False(c.MarkAllSentencesDispatched(cancelledTurn, 1, 1000));
+        Assert.Equal(VoiceState.Listening, c.State);
+        Assert.False(c.AllSentencesDispatched);
+    }
+
+    [Fact]
+    public void Cancel_reports_the_highest_sentence_the_client_played()
+    {
+        var (c, _) = Create();
+        c.BeginThinking();
+        var turn = c.TurnId;
+        c.MarkAllSentencesDispatched(3, 3000);
+        c.SentencePlayed(turn, 0);
+        c.SentencePlayed(turn, 2);
+
+        var (reportedTurn, lastPlayed) = c.Cancel("stop");
+
+        Assert.Equal(turn, reportedTurn);
+        Assert.Equal(2, lastPlayed);
+    }
+
+    [Fact]
+    public void Watchdog_also_invalidates_reports_from_the_timed_out_turn()
+    {
+        var (c, time) = Create();
+        c.BeginThinking();
+        var timedOut = c.TurnId;
+        c.MarkAllSentencesDispatched(1, 0);
+
+        time.Advance(TimeSpan.FromMilliseconds(600));
+
+        Assert.Equal(VoiceState.Listening, c.State);
+        Assert.False(c.SentenceStarted(timedOut, 0, 100));
+        Assert.Equal(VoiceState.Listening, c.State);
+    }
+
     private static (TurnCoordinator Coordinator, FakeTimeProvider Time) Create()
     {
         var time = new FakeTimeProvider();

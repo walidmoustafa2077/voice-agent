@@ -45,6 +45,8 @@ export function createPlayback({ ctx, gain, onStarted, onPlayed }) {
         }, audibleInMs);
 
         source.onended = () => {
+          const at = sources.indexOf(source);
+          if (at >= 0) sources.splice(at, 1);
           if (mine === generation) onPlayed(index);
         };
 
