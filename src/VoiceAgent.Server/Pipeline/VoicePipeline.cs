@@ -11,7 +11,7 @@ namespace VoiceAgent.Server.Pipeline;
 public sealed class VoicePipeline : IDisposable
 {
     private readonly SpeechSegmenter _segmenter;
-    private readonly SttService _stt;
+    private readonly ISttService _stt;
     private readonly LlmService _llm;
     private readonly ITtsService _tts;
     private readonly IVoiceEventSink _sink;
@@ -24,10 +24,14 @@ public sealed class VoicePipeline : IDisposable
     private Task? _turnTask;
     private short[]? _pendingPcm;
     private short[] _lastUtterancePcm = [];
+    private short[]? _mergeBase;
+    private bool _userAddedThisTurn;
+    private readonly BargeInGate _bargeIn = new(250);
+    private readonly EchoFloorGate _echoFloor = new();
 
     public VoicePipeline(
         SpeechSegmenter segmenter,
-        SttService stt,
+        ISttService stt,
         LlmService llm,
         ITtsService tts,
         IVoiceEventSink sink,
@@ -40,10 +44,17 @@ public sealed class VoicePipeline : IDisposable
         _sink = sink;
         _turns = turns;
 
-        _turns.StateChanged += state => _ = _sink.SendAsync(new StateChanged(state));
+        _turns.StateChanged += state =>
+        {
+            _segmenter.Threshold = state == VoiceState.Speaking ? 0.6f : 0.5f;
+            if (state != VoiceState.Speaking) _echoFloor.EndPlayback();
+            _ = _sink.SendAsync(new StateChanged(state));
+        };
     }
 
     public TurnCoordinator Turns => _turns;
+
+    public float CurrentVadThreshold => _segmenter.Threshold;
 
     public short[] LastUtterancePcm
     {
@@ -64,26 +75,72 @@ public sealed class VoicePipeline : IDisposable
     public Task PushAudioAsync(short[] pcm16k, CancellationToken ct)
     {
         var frame = _segmenter.Push(pcm16k);
+        var state = _turns.State;
+
+        if (state is VoiceState.Thinking or VoiceState.Speaking)
+        {
+            var userSpeech = _echoFloor.IsUserSpeech(pcm16k, frame.Probability);
+            if (_bargeIn.Push(userSpeech, pcm16k.Length / 16))
+            {
+                _bargeIn.Reset();
+                return HandleBargeInAsync(state);
+            }
+        }
+        else
+        {
+            _bargeIn.Reset();
+        }
 
         foreach (var evt in frame.Events)
         {
             if (evt.IsStart || evt.Pcm is null || evt.Pcm.Length == 0)
                 continue;
 
+            var pcm = evt.Pcm;
+
             lock (_gate)
             {
+                if (_mergeBase is not null)
+                {
+                    pcm = [.. _mergeBase, .. pcm];
+                    _mergeBase = null;
+                }
+
                 if (_turnTask is { IsCompleted: false })
                 {
-                    // Task 7 merges this into the running turn instead of replacing it.
-                    _pendingPcm = evt.Pcm;
+                    _pendingPcm = pcm;
                     continue;
                 }
 
-                _turnTask = RunTurnsAsync(evt.Pcm, ct);
+                _turnTask = RunTurnsAsync(pcm, ct);
             }
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Stops the reply without discarding what the user has already said. During Thinking the
+    /// aborted utterance becomes the base of the next one, so "summarise this ... no, shorter"
+    /// is a single turn rather than two racing answers.
+    /// </summary>
+    private Task HandleBargeInAsync(VoiceState state)
+    {
+        var merge = state == VoiceState.Thinking;
+
+        if (merge)
+        {
+            lock (_gate)
+            {
+                _mergeBase = _lastUtterancePcm;
+            }
+
+            if (_userAddedThisTurn)
+                _history.RemoveLastUser();
+        }
+
+        _turns.Cancel(merge ? "merge" : "barge");
+        return TrySendAsync(new TurnCancelled(merge ? "merge" : "barge"));
     }
 
     private async Task RunTurnsAsync(short[] first, CancellationToken ct)
@@ -98,8 +155,9 @@ public sealed class VoicePipeline : IDisposable
             }
             catch (OperationCanceledException)
             {
-                // Cancelled by barge-in or disconnect: the cancel path already told the client.
-                return;
+                // A barge-in cancels this turn, not the session; the merged utterance (if any)
+                // arrives as a later segment and starts its own turn.
+                if (ct.IsCancellationRequested) return;
             }
             catch (Exception ex)
             {
@@ -111,6 +169,10 @@ public sealed class VoicePipeline : IDisposable
             {
                 pcm = _pendingPcm;
                 _pendingPcm = null;
+
+                // Released under the lock so the next utterance cannot be appended to a loop
+                // that has already decided to exit.
+                if (pcm is null) _turnTask = null;
             }
         }
     }
@@ -119,6 +181,14 @@ public sealed class VoicePipeline : IDisposable
     {
         _turns.BeginThinking();
         var turnId = _turns.TurnId;
+        _userAddedThisTurn = false;
+
+        lock (_gate)
+        {
+            _lastUtterancePcm = pcm;
+            _sentences.Clear();
+            _durations.Clear();
+        }
 
         await TrySendAsync(new TurnStarted(turnId, DateTimeOffset.UtcNow));
 
@@ -138,17 +208,11 @@ public sealed class VoicePipeline : IDisposable
             return;
         }
 
-        lock (_gate)
-        {
-            _lastUtterancePcm = pcm;
-            _sentences.Clear();
-            _durations.Clear();
-        }
-
         Console.WriteLine($"stt {result.LatencyMs:F0} ms: {result.Text}");
         await TrySendAsync(new Transcript(result.Text));
 
         _history.AddUser(result.Text);
+        _userAddedThisTurn = true;
         var chunker = new SentenceChunker();
         var full = new StringBuilder();
         var jobs = System.Threading.Channels.Channel.CreateUnbounded<(int Index, string Text)>(
@@ -258,6 +322,7 @@ public sealed class VoicePipeline : IDisposable
         }
 
         _turns.BeginSpeaking(index, duration);
+        _echoFloor.BeginPlayback();
         return Task.CompletedTask;
     }
 

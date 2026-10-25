@@ -6,7 +6,12 @@ namespace VoiceAgent.Server.Pipeline;
 
 public sealed record SttResult(string Text, double LatencyMs);
 
-public sealed class SttService : IDisposable
+public interface ISttService
+{
+    Task<SttResult> TranscribeAsync(short[] pcm16k, CancellationToken ct);
+}
+
+public sealed class SttService : ISttService, IDisposable
 {
     private readonly WhisperFactory _factory;
     private readonly SemaphoreSlim _gate = new(1, 1);

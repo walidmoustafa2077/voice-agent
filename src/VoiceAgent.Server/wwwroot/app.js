@@ -13,6 +13,34 @@ let mediaStream;
 
 let playCtx;
 let playbackGain;
+let lastAudioAt = 0;
+let ducked = false;
+let restoreTimer = null;
+
+function rmsOf(samples) {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return Math.sqrt(sum / samples.length);
+}
+
+// Energy-only ducking: no network round trip, no model. The server's cancel is what actually
+// stops speech; this just takes the edge off during the round trip.
+function maybeDuck(level) {
+  if (!playbackGain || !playCtx || playCtx.state !== 'running') return;
+  if (performance.now() - lastAudioAt > 15000) return;
+  if (level < 0.03) return;
+
+  if (!ducked) {
+    ducked = true;
+    playbackGain.gain.setTargetAtTime(0, playCtx.currentTime, 0.01); // ~30 ms to silence
+  }
+
+  clearTimeout(restoreTimer);
+  restoreTimer = setTimeout(() => {
+    ducked = false;
+    if (playbackGain) playbackGain.gain.setTargetAtTime(1, playCtx.currentTime, 0.027); // ~80 ms
+  }, 350);
+}
 let playback;
 let currentTurnId = 0;
 let turnStartedAt = 0;
@@ -95,9 +123,17 @@ async function connect() {
   connection.on('audioChunk', (index, wav, durationMs) => {
     ensurePlayback();
     if (playCtx.state === 'suspended') playCtx.resume();
+    lastAudioAt = performance.now();
+    clearTimeout(restoreTimer);
+    ducked = false;
+    playbackGain.gain.setValueAtTime(1, playCtx.currentTime);
     playback.enqueue(index, wav, durationMs);
   });
   connection.on('turnCancelled', (reason) => {
+    clearTimeout(restoreTimer);
+    ducked = true;
+    lastAudioAt = 0;
+    if (playbackGain) playbackGain.gain.setValueAtTime(0, playCtx.currentTime);
     playback?.flush();
     note(`interrupted (${reason})`, 'meta');
   });
@@ -125,6 +161,7 @@ async function startCapture() {
   worklet.port.onmessage = (event) => {
     if (!connection || connection.state !== signalR.HubConnectionState.Connected) return;
     const bytes = toPcm16(event.data);
+    maybeDuck(rmsOf(event.data));
     connection.invoke('SendAudio', bytes).catch((err) => console.error(err));
   };
   source.connect(worklet);
