@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voice Agent</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Voice Agent</h1>
+      <span id="state" class="state">idle</span>
+    </header>
+
+    <section id="log" class="log" aria-live="polite"></section>
+
+    <footer>
+      <div class="meter"><div id="level" class="level"></div></div>
+      <span id="fps" class="fps">0 fps</span>
+      <button id="start" type="button">Start microphone</button>
+    </footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@8.0.7/dist/browser/signalr.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr-protocol-msgpack@8.0.7/dist/browser/signalr-protocol-msgpack.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
