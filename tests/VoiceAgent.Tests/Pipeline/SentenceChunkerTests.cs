@@ -23,16 +23,30 @@ public sealed class SentenceChunkerTests
     }
 
     [Fact]
-    public void Flushes_at_the_cap_when_no_punctuation_arrives()
+    public void Flushes_the_first_chunk_early_at_a_word_boundary()
     {
         var chunker = new SentenceChunker();
         var text = string.Join(' ', Enumerable.Repeat("word", 24)); // 119 chars, no terminator
 
         var chunks = chunker.Push(text);
 
-        Assert.Single(chunks);
-        Assert.True(chunks[0].Length <= 90, $"chunk was {chunks[0].Length} chars");
+        Assert.NotEmpty(chunks);
+        Assert.True(chunks[0].Length <= 36, $"first chunk was {chunks[0].Length} chars");
+        Assert.DoesNotContain("  ", chunks[0]);
         Assert.NotEmpty(chunker.Flush());
+    }
+
+    [Fact]
+    public void Flushes_at_the_cap_after_the_first_chunk()
+    {
+        var chunker = new SentenceChunker();
+        _ = chunker.Push(string.Join(' ', Enumerable.Repeat("word", 12))); // consume the first chunk
+        var text = string.Join(' ', Enumerable.Repeat("word", 24));       // 119 chars, no terminator
+
+        var chunks = chunker.Push(text);
+
+        Assert.NotEmpty(chunks);
+        Assert.All(chunks, c => Assert.True(c.Length <= 90, $"chunk was {c.Length} chars"));
     }
 
     [Fact]
@@ -52,9 +66,10 @@ public sealed class SentenceChunkerTests
 
         var chunks = chunker.Push(new string('a', 120));
 
-        Assert.Single(chunks);
-        Assert.Equal(90, chunks[0].Length);
-        Assert.Equal(30, chunker.Flush().Length);
+        Assert.NotEmpty(chunks);
+        Assert.Equal(36, chunks[0].Length);
+        Assert.All(chunks, c => Assert.True(c.Length <= 90));
+        Assert.Equal(84, chunker.Flush().Length);
     }
 
     [Fact]

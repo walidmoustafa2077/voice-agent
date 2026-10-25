@@ -29,6 +29,24 @@ foreach (var model in VoiceAgent.Server.ModelDownloader.Required)
         model, models, logger, CancellationToken.None);
 }
 
+// Pay the ONNX graph construction and first-inference cost once, in the background, so the
+// first real turn is not the one that warms Whisper and Kokoro up.
+var warmupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Warmup");
+_ = Task.Run(async () =>
+{
+    try
+    {
+        var ttsWarm = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.ITtsService>>().Value;
+        _ = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.SttService>>().Value;
+        await ttsWarm.SynthesizeAsync("Ready.", CancellationToken.None);
+        warmupLog.LogInformation("speech models warm");
+    }
+    catch (Exception ex)
+    {
+        warmupLog.LogWarning(ex, "warm-up failed; the first turn will be slower");
+    }
+});
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapHub<VoiceAgent.Server.Hubs.VoiceHub>("/hub/voice");

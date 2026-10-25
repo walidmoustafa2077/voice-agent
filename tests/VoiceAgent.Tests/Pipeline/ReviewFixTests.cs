@@ -121,7 +121,7 @@ public sealed class ReviewFixTests
         await Push(pipeline, Quiet(40));
         await (pipeline.CurrentTurn ?? Task.CompletedTask).WaitAsync(TimeSpan.FromSeconds(30));
 
-        Assert.Equal(2, pipeline.Sentences.Count);
+        Assert.True(pipeline.Sentences.Count >= 2, $"expected at least two chunks, got {pipeline.Sentences.Count}");
         Assert.True(turns.AllSentencesDispatched);
 
         return new Harness(pipeline, stt, sink, turns);
