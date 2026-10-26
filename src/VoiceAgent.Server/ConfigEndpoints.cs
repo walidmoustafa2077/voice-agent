@@ -25,7 +25,7 @@ public static class ConfigEndpoints
                 {
                     stt = ModelPaths.WhisperTinyEn,
                     vad = ModelPaths.SileroVad,
-                    tts = ModelPaths.Kokoro,
+                    tts = Pipeline.TtsFactory.Description,
                     llm = "gemma4:31b-cloud @ http://localhost:11434",
                 },
                 browser = "Chrome or Edge (AEC quality is the interaction)",

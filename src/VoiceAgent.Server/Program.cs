@@ -14,7 +14,7 @@ builder.Services.AddSingleton(new VoiceAgent.Server.Pipeline.LlmService(
         "gemma4:31b-cloud")));
 
 builder.Services.AddSingleton(new Lazy<VoiceAgent.Server.Pipeline.ITtsService>(
-    () => new VoiceAgent.Server.Pipeline.TtsService(VoiceAgent.Server.ModelPaths.Kokoro)));
+    VoiceAgent.Server.Pipeline.TtsFactory.Create));
 
 builder.Services.AddSingleton<VoiceAgent.Server.Options.VoiceConfigStore>();
 
@@ -30,7 +30,7 @@ foreach (var model in VoiceAgent.Server.ModelDownloader.Required)
 }
 
 // Pay the ONNX graph construction and first-inference cost once, in the background, so the
-// first real turn is not the one that warms Whisper and Kokoro up.
+// first real turn is not the one that warms Whisper and the speech engine.
 var warmupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Warmup");
 _ = Task.Run(async () =>
 {

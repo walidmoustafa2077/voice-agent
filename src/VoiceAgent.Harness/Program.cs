@@ -5,6 +5,10 @@ using VoiceAgent.Server.Audio;
 using VoiceAgent.Server.Pipeline;
 using VoiceAgent.Server.Sessions;
 
+// Benchmark mode runs before the file-path check so the flag is not read as a WAV path.
+if (args.Length > 0 && args[0] == "--tts-bench")
+    return await TtsBench.RunAsync();
+
 var path = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
 
 if (path is null || !File.Exists(path))
@@ -17,7 +21,7 @@ using var vad = new SileroVadModel(ModelPaths.SileroVad);
 var segmenter = new SpeechSegmenter(vad, new VadOptions());
 var turns = new TurnCoordinator(TimeProvider.System, TimeSpan.FromMilliseconds(500));
 using var stt = new SttService(ModelPaths.WhisperTinyEn);
-using var tts = new TtsService(ModelPaths.Kokoro);
+var tts = TtsFactory.Create();
 var llm = new LlmService(
     new OllamaSharp.OllamaApiClient(new Uri("http://localhost:11434"), "gemma4:31b-cloud"));
 var sink = new ConsoleVoiceEventSink();
@@ -66,4 +70,5 @@ if (pipeline.CurrentTurn is { } turn)
 
 Console.WriteLine();
 Console.WriteLine("done");
+(tts as IDisposable)?.Dispose();
 return 0;

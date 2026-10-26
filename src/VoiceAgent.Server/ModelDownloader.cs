@@ -25,7 +25,9 @@ public static class ModelDownloader
         "https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro.onnx",
         ModelPaths.Kokoro, ModelPaths.KokoroMinBytes);
 
-    public static IReadOnlyList<ModelFile> Required { get; } = [Silero, Whisper, Kokoro];
+    public static IReadOnlyList<ModelFile> Required { get; } = VoiceAgent.Server.Pipeline.TtsFactory.IsKokoro
+        ? [Silero, Whisper, Kokoro]
+        : [Silero, Whisper];
 
     public static async Task EnsureAsync(
         ModelFile model, HttpClient http, ILogger logger, CancellationToken ct)
