@@ -12,7 +12,7 @@ public sealed class SherpaStreamingStt : IStreamingStt, ISttService
 {
     public const int SampleRate = 16000;
     public const int FrameSamples = 320; // 20 ms
-    public const int TailPaddingMs = 300;
+    public const int TailPaddingMs = 1000;
     public const int Threads = 3;
 
     private readonly OnlineRecognizer _recognizer;
@@ -102,9 +102,14 @@ public sealed class SherpaStreamingStt : IStreamingStt, ISttService
 
             // A transducer cannot emit the final word until it has seen context after it. Feed a
             // short silent tail so the last chunk is decoded instead of truncated.
-            var tail = new float[SampleRate * TailPaddingMs / 1000];
-            _stream.AcceptWaveform(SampleRate, tail);
-            Drain();
+            // The tail goes in 20 ms frames with a drain after each, exactly like live audio:
+            // one large blob leaves the decoder holding the final chunk and truncates the word.
+            var tail = new float[FrameSamples];
+            for (var fed = 0; fed < SampleRate * TailPaddingMs / 1000; fed += FrameSamples)
+            {
+                _stream.AcceptWaveform(SampleRate, tail);
+                Drain();
+            }
 
             _stream.InputFinished();
             Drain();
