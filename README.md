@@ -120,10 +120,12 @@ Two TTS engines are available; the server picks one at startup.
 | engine | default on | model | measured speed | voice |
 | ------ | ---------- | ----- | -------------- | ----- |
 | Windows SAPI | Windows | none (built into the OS) | ~0.1x realtime | dated but intelligible |
-| Kokoro `af_heart` | other OSes | `kokoro.onnx` (~325 MB) | ~1.1x realtime (3 threads) | natural |
+| Kokoro `af_heart` | other OSes | `kokoro.onnx` (~325 MB) | ~1.1x idle, 2.0-3.7x during a live turn | natural |
 
-SAPI renders a sentence in well under a second on this CPU, while Kokoro needs several seconds,
-so SAPI is the default here. Choose Kokoro for quality:
+SAPI renders a sentence in well under a second on this CPU. Kokoro measures ~1.1x realtime in
+isolation but **2.0-3.7x during a live turn**, because the LLM stream, the recognizer and the VAD
+share the same four cores: a real session needed 8.6-29.6 s to synthesize 10-12 chunks. That is why
+SAPI is the default here. Choose Kokoro for the voice, accepting the wait:
 
 ```bash
 set VOICEAGENT_TTS=kokoro      # PowerShell: $env:VOICEAGENT_TTS="kokoro"
@@ -145,7 +147,8 @@ On a CPU-only machine the local stages dominate. Measured on the development mac
   after you start talking.
 - SAPI synthesis is effectively free (~0.1x realtime); the first audio arrives a fraction of a
   second after the first sentence is known.
-- Kokoro, if selected, runs at ~1.1x realtime and adds several seconds before the first sound.
+- Kokoro, if selected, runs at ~1.1x realtime when idle but 2.0-3.7x while the rest of the turn is
+  running, so its audio lags the text by many seconds.
 
 With SAPI, budget the **800 ms endpoint wait** plus a single-digit-millisecond flush, then the time
 it takes the remote model to produce its first token and the first sentence. A 20 s question is

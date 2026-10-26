@@ -273,6 +273,10 @@ stays the accuracy fallback, but on a 12–18 s question it costs 5–6 s of dea
 endpoint, which is why it is not the default.
 
 Kokoro is kept because it is local and the voice is better; it is a one-variable env switch.
+Measured under a live turn, with the LLM stream, Kroko decode and Silero sharing four cores, it ran
+at **2.03x and 3.72x realtime**, synthesizing 8.6 s, 18.4 s and 29.6 s of audio for 12, 2 and 10
+chunks. The isolated 1.1x benchmark does not survive contention, so Kokoro stays an opt-in and
+SAPI remains the default.
 Its thread sweep (same 67-char sentence, 4.05 s audio): 1 → 1.76×, 2 → 1.27×, 3 → 1.11×,
 4 → 1.16×, so 3 intra-op threads is the optimum on four cores.
 
