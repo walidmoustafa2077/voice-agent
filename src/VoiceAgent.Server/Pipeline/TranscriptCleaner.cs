@@ -19,6 +19,27 @@ public static partial class TranscriptCleaner
 
     public static bool IsSilent(short[] pcm) => Rms(pcm) < SilenceRmsThreshold;
 
+    /// <summary>
+    /// Streaming transducers return all caps with no punctuation. Turn that into something the
+    /// language model and the transcript pane can read: lowercase it when it is shouting, capitalise
+    /// the first letter, and end with a full stop.
+    /// </summary>
+    public static string SentenceCase(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length == 0) return "";
+
+        if (trimmed.Any(char.IsLower) == false && trimmed.Any(char.IsUpper))
+            trimmed = trimmed.ToLowerInvariant();
+
+        var chars = trimmed.ToCharArray();
+        if (char.IsLetter(chars[0]))
+            chars[0] = char.ToUpperInvariant(chars[0]);
+
+        var result = new string(chars);
+        return result[^1] is '.' or '!' or '?' ? result : result + ".";
+    }
+
     private static double Rms(short[] pcm)
     {
         if (pcm.Length == 0) return 0;

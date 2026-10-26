@@ -19,11 +19,15 @@ public static class SttFactory
 
     public static string Description => Mode == SttMode.WholeUtterance
         ? "Whisper tiny.en (whole utterance)"
-        : "Whisper tiny.en (buffered streaming interface)";
+        : "Sherpa streaming Zipformer (int8, 3 threads)";
 
     public static ISttService Create() => Mode == SttMode.WholeUtterance
-        ? new SttService(ModelPaths.WhisperTinyEn)
-        : new BufferedWhisperStt(new SttService(ModelPaths.WhisperTinyEn));
+        ? new BufferedWhisperStt(new SttService(ModelPaths.WhisperTinyEn))
+        : new SherpaStreamingStt(
+            ModelPaths.SherpaEncoder,
+            ModelPaths.SherpaDecoder,
+            ModelPaths.SherpaJoiner,
+            ModelPaths.SherpaTokens);
 
     private static SttMode Resolve()
     {

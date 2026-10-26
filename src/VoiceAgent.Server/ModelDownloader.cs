@@ -25,9 +25,46 @@ public static class ModelDownloader
         "https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro.onnx",
         ModelPaths.Kokoro, ModelPaths.KokoroMinBytes);
 
-    public static IReadOnlyList<ModelFile> Required { get; } = VoiceAgent.Server.Pipeline.TtsFactory.IsKokoro
-        ? [Silero, Whisper, Kokoro]
-        : [Silero, Whisper];
+    private const string SherpaBase =
+        "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/";
+
+    public static ModelFile SherpaEncoder { get; } = new(
+        "Streaming Zipformer encoder",
+        SherpaBase + "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        ModelPaths.SherpaEncoder, ModelPaths.SherpaEncoderMinBytes);
+
+    public static ModelFile SherpaDecoder { get; } = new(
+        "Streaming Zipformer decoder",
+        SherpaBase + "decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        ModelPaths.SherpaDecoder, ModelPaths.SherpaDecoderMinBytes);
+
+    public static ModelFile SherpaJoiner { get; } = new(
+        "Streaming Zipformer joiner",
+        SherpaBase + "joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        ModelPaths.SherpaJoiner, ModelPaths.SherpaJoinerMinBytes);
+
+    public static ModelFile SherpaTokens { get; } = new(
+        "Streaming Zipformer tokens",
+        SherpaBase + "tokens.txt",
+        ModelPaths.SherpaTokens, ModelPaths.SherpaTokensMinBytes);
+
+    public static IReadOnlyList<ModelFile> Required { get; } = BuildRequired();
+
+    private static IReadOnlyList<ModelFile> BuildRequired()
+    {
+        var models = new List<ModelFile> { Silero, Whisper };
+
+        if (VoiceAgent.Server.Pipeline.SttFactory.Mode ==
+            VoiceAgent.Server.Pipeline.SttMode.Streaming)
+        {
+            models.AddRange([SherpaEncoder, SherpaDecoder, SherpaJoiner, SherpaTokens]);
+        }
+
+        if (VoiceAgent.Server.Pipeline.TtsFactory.IsKokoro)
+            models.Add(Kokoro);
+
+        return models;
+    }
 
     public static async Task EnsureAsync(
         ModelFile model, HttpClient http, ILogger logger, CancellationToken ct)

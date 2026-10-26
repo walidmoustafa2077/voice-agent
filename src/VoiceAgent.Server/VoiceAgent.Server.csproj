@@ -9,7 +9,15 @@
   <ItemGroup>
     <PackageReference Include="KokoroSharp.CPU" Version="0.8.4" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.13" />
+    <!--
+      Pinned together on purpose. sherpa-onnx ships its own runtimes/win-x64/native/onnxruntime.dll;
+      the build resolves the collision in Microsoft.ML.OnnxRuntime's favour (17,253,176 B beats
+      sherpa's 17,799,168 B) and sherpa 2.0.0 runs on it. Bumping either independently can flip
+      which DLL wins; the startup self-check opens Silero and a recognizer in one process to catch it.
+    -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="2.0.0" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="2.0.0" />
     <PackageReference Include="OllamaSharp" Version="5.5.0" />
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />

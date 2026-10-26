@@ -49,6 +49,16 @@ _ = Task.Run(async () =>
         var sttWarm = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.ISttService>>().Value;
         await ttsWarm.SynthesizeAsync("Ready.", CancellationToken.None);
 
+        if (VoiceAgent.Server.Pipeline.SttFactory.Mode == VoiceAgent.Server.Pipeline.SttMode.Streaming)
+        {
+            // Pinned-pairing guard: sherpa-onnx ships its own onnxruntime.dll and the build
+            // resolves that collision in Microsoft's favour. Both native stacks loading in one
+            // process is the property we rely on, so fail loudly here rather than mid-turn.
+            using var vadPair = new VoiceAgent.Server.Pipeline.SileroVadModel(
+                VoiceAgent.Server.ModelPaths.SileroVad);
+            warmupLog.LogInformation("stt self-check: Silero VAD and sherpa-onnx coexist");
+        }
+
         // Constructing SttService only loads the model; Whisper's first inference is the real
         // cost. Silence is short-circuited before Whisper runs, so feed a short non-silent tone.
         var tone = new short[16000];
