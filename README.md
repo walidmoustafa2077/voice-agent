@@ -8,7 +8,7 @@ The language model is the only remote piece. It is served through your local Oll
 (`gemma4:31b-cloud`), so the audio path never leaves the box.
 
 ```
-mic → VAD (Silero) → STT (sherpa-onnx streaming Zipformer) → LLM (Ollama) → TTS (SAPI or Kokoro) → speaker
+mic → VAD (Silero) → STT (Kroko streaming Zipformer) → LLM (Ollama) → TTS (SAPI or Kokoro) → speaker
 ```
 
 The whole thing is a cascade, not a speech-to-speech model. That is what makes it cheap to run on
@@ -23,8 +23,8 @@ a CPU: the only models that run per turn are tiny, and the large model is remote
   Firefox and Safari are not supported.
 - **Headphones.** The agent's own voice reaches the microphone through the speakers, and echo
   cancellation only goes so far. Without headphones you will see phantom barge-ins.
-- ~100 MB free disk for the default speech models (Silero VAD and the sherpa-onnx streaming
-  Zipformer, about 73 MB). The Whisper fallback adds about 78 MB and is only downloaded when you
+- ~100 MB free disk for the default speech models (Silero VAD and Kroko's streaming Zipformer,
+  about 70 MB). The Whisper fallback adds about 78 MB and is only downloaded when you
   select it with `VOICEAGENT_STT=whisper`; Kokoro adds about 325 MB and is only downloaded with
   `VOICEAGENT_TTS=kokoro`. A CPU is enough; no GPU is used.
 
@@ -34,8 +34,8 @@ a CPU: the only models that run per turn are tiny, and the large model is remote
 dotnet run --project src/VoiceAgent.Server
 ```
 
-On startup the server downloads Silero VAD and the sherpa-onnx recognizer (encoder, decoder, joiner
-and token table) into `models/` if they are missing, about 80 MB in total. Whisper `tiny.en` is only
+On startup the server downloads Silero VAD and Kroko's streaming Zipformer (encoder, decoder, joiner
+and token table) into `models/` if they are missing, about 75 MB in total. Whisper `tiny.en` is only
 downloaded when you select the fallback with `VOICEAGENT_STT=whisper`, and Kokoro only when you
 select it with `VOICEAGENT_TTS=kokoro`. It logs each file as it finishes. Downloads go to `*.part` files and are only moved into place after they pass a
 minimum-size sanity check, so a killed download cannot poison later runs.
@@ -95,15 +95,17 @@ recognizer stream never heard the first utterance.
 The per-turn console line carries two diagnostic counters, cumulative for the session:
 `lateSpeech` counts speech onsets that arrived within 1 s after an endpoint without a new segment
 start, and `thinkingSpeech` counts onsets that arrived while the agent was still thinking. If a
-real-microphone session drops words, these say whether the 600 ms endpoint is responsible. The fix
+real-microphone session drops words, these say whether the 800 ms endpoint is responsible. The fix
 in that case is to keep feeding the stream until the turn is committed to the LLM, not to lengthen
 the silence window.
 
 ## Speech engine
 
-Speech recognition runs locally with sherpa-onnx's streaming Zipformer (int8, 3 threads). It
-decodes while you talk, so by the time you stop, most of the utterance is already transcribed and
-only a short flush remains. The whole-utterance Whisper `tiny.en` path is kept as a fallback:
+Speech recognition runs locally with Kroko's 2025-08 English streaming Zipformer (3 threads). It
+decodes while you talk, so by the time you stop, the utterance is already transcribed and only a
+single-digit-millisecond flush remains. It emits punctuation and capitalisation natively, so the
+sentence-casing heuristic is a no-op on this path. The whole-utterance Whisper `tiny.en` path is
+kept as a fallback:
 
 ```bash
 set VOICEAGENT_STT=whisper     # PowerShell: $env:VOICEAGENT_STT="whisper"
@@ -137,18 +139,17 @@ is used.
 On a CPU-only machine the local stages dominate. Measured on the development machine (4 cores,
 2016 APU):
 
-- Streaming Zipformer decodes at about **0.32–0.38x realtime** at 3 threads. Because it runs while
-  you speak, the cost you feel at the end is only the final flush: roughly **110–150 ms** after a
-  300 ms zero tail is fed to close the recognizer. The first tentative transcript appears about
-  300 ms after you start talking.
+- Kroko's Zipformer decodes at about **0.12–0.18x realtime** at 3 threads. Because it runs while
+  you speak, the cost you feel at the end is only the final flush: **1–9 ms** after a 300 ms zero
+  tail is fed to close the recognizer. The first tentative transcript appears about 300–375 ms
+  after you start talking.
 - SAPI synthesis is effectively free (~0.1x realtime); the first audio arrives a fraction of a
   second after the first sentence is known.
 - Kokoro, if selected, runs at ~1.1x realtime and adds several seconds before the first sound.
 
-With SAPI, budget roughly **150–300 ms of local work after you stop talking**, plus the time it
-takes the remote model to produce its first token and the first sentence. A 20 s question no longer
-costs 20 s of transcription up front — it is decoded as you speak — but nothing is spoken before
-the first sentence is complete.
+With SAPI, budget the **800 ms endpoint wait** plus a single-digit-millisecond flush, then the time
+it takes the remote model to produce its first token and the first sentence. A 20 s question is
+decoded as you speak, and nothing is spoken before the first sentence is complete.
 
 The Whisper fallback (`VOICEAGENT_STT=whisper`) is whole-utterance and runs at about **1.4–1.6x
 realtime**, so a 20 s question costs 25–30 s before the LLM is called. Use it only if the streaming
@@ -182,7 +183,7 @@ at construction — and is why nothing is persisted.
 `vadThreshold` applies while listening; `speakingVadThreshold` applies only while the agent is
 speaking and is deliberately higher so the agent's own voice is harder to trigger on.
 
-The recognizer stream endpoints after `minSilenceMs` of silence (default 600 ms), but only once its
+The recognizer stream endpoints after `minSilenceMs` of silence (default 800 ms), but only once its
 hypothesis has also been unchanged for 350 ms; the two conditions run in parallel, so an ordinary
 mid-sentence pause is not an endpoint. A hard cap finalizes at 30 s of speech, matching the
 segmenter's own buffer; it only protects against a stream that never settles, so a 20 s question

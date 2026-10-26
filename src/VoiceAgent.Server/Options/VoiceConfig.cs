@@ -6,7 +6,7 @@ public sealed record VoiceConfig
     public float VadThreshold { get; init; } = 0.5f;
     public float SpeakingVadThreshold { get; init; } = 0.6f;
     public int MinSpeechMs { get; init; } = 250;
-    public int MinSilenceMs { get; init; } = 600;
+    public int MinSilenceMs { get; init; } = 800;
     public int PreRollMs { get; init; } = 150;
     public int MaxChunkChars { get; init; } = 90;
     public int MinChunkChars { get; init; } = 20;

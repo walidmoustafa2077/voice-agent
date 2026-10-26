@@ -2,6 +2,7 @@
 using VoiceAgent.Harness;
 using VoiceAgent.Server;
 using VoiceAgent.Server.Audio;
+using VoiceAgent.Server.Options;
 using VoiceAgent.Server.Pipeline;
 using VoiceAgent.Server.Sessions;
 
@@ -43,7 +44,14 @@ if (path is null || !File.Exists(path))
 }
 
 using var vad = new SileroVadModel(ModelPaths.SileroVad);
-var segmenter = new SpeechSegmenter(vad, new VadOptions());
+var cfg = new VoiceConfig();
+var segmenter = new SpeechSegmenter(vad, new VadOptions
+{
+    Threshold = cfg.VadThreshold,
+    MinSpeechMs = cfg.MinSpeechMs,
+    MinSilenceMs = cfg.MinSilenceMs,
+    PreRollMs = cfg.PreRollMs,
+});
 var turns = new TurnCoordinator(TimeProvider.System, TimeSpan.FromMilliseconds(500));
 var stt = SttFactory.Create();
 Console.WriteLine($"stt: {SttFactory.Description}");

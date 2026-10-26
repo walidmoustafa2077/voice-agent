@@ -26,25 +26,25 @@ public static class ModelDownloader
         ModelPaths.Kokoro, ModelPaths.KokoroMinBytes);
 
     private const string SherpaBase =
-        "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/";
+        "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/resolve/main/";
 
     public static ModelFile SherpaEncoder { get; } = new(
-        "Streaming Zipformer encoder",
-        SherpaBase + "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "Kroko streaming Zipformer encoder",
+        SherpaBase + "encoder.onnx",
         ModelPaths.SherpaEncoder, ModelPaths.SherpaEncoderMinBytes);
 
     public static ModelFile SherpaDecoder { get; } = new(
-        "Streaming Zipformer decoder",
-        SherpaBase + "decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "Kroko streaming Zipformer decoder",
+        SherpaBase + "decoder.onnx",
         ModelPaths.SherpaDecoder, ModelPaths.SherpaDecoderMinBytes);
 
     public static ModelFile SherpaJoiner { get; } = new(
-        "Streaming Zipformer joiner",
-        SherpaBase + "joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "Kroko streaming Zipformer joiner",
+        SherpaBase + "joiner.onnx",
         ModelPaths.SherpaJoiner, ModelPaths.SherpaJoinerMinBytes);
 
     public static ModelFile SherpaTokens { get; } = new(
-        "Streaming Zipformer tokens",
+        "Kroko streaming Zipformer tokens",
         SherpaBase + "tokens.txt",
         ModelPaths.SherpaTokens, ModelPaths.SherpaTokensMinBytes);
 

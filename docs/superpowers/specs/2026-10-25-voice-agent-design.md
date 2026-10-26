@@ -27,7 +27,7 @@ drives the whole design is barge-in with echo cancellation.
 | # | Goal | How we know |
 |---|------|-------------|
 | G1 | Phone-like turn-taking | Playback silenced within ~300 ms of the user starting to speak; cancel fires at ≤ 250 ms of sustained speech |
-| G2 | The speech stack is local and offline | Silero VAD and Whisper.net run in .NET on our own models; TTS is an OS-provided offline voice (Windows SAPI) by default, with Kokoro as a local opt-in. Only the LLM is remote (Ollama cloud route). No Web Speech, no `speechSynthesis`, no cloud speech service |
+| G2 | The speech stack is local and offline | Silero VAD and the Kroko streaming Zipformer (sherpa-onnx) run in .NET on our own models, with Whisper.net as a local fallback; TTS is an OS-provided offline voice (Windows SAPI) by default, with Kokoro as a local opt-in. Only the LLM is remote (Ollama cloud route). No Web Speech, no `speechSynthesis`, no cloud speech service |
 | G3 | One command to run | `dotnet run` then open one page. No npm, no build step |
 | G4 | Text alongside voice | Live transcript pane: user text, assistant text, state |
 | G5 | Honest latency | First audio typically under 3 s on CPU (see §10); every stage timed and shown |
@@ -122,7 +122,7 @@ browser or a microphone.
 │  VoiceHub ─ VoicePipeline + TurnCoordinator per connection  │
 │    ├─ StreamingResampler (native rate → 16 kHz)             │
 │    ├─ SpeechSegmenter (Silero v5 ONNX) ── speech start/end  │
-│    ├─ SttService (Whisper.net, tiny.en)                     │
+│    ├─ Kroko streaming Zipformer (sherpa-onnx)              │
 │    ├─ LlmService (OllamaApiClient, streaming)               │
 │    ├─ SentenceChunker                                       │
 │    └─ TtsService (SAPI by default, Kokoro opt-in)           │
@@ -140,7 +140,7 @@ browser or a microphone.
 | `VoiceHub` | transport | `AddMessagePackProtocol`, `MaximumReceiveMessageSize = 1 MB` |
 | `VoiceSession` | per-connection state | ring buffer, VAD, turn context, history (max 20 turns) |
 | `VadSegmenter` | speech boundaries | Silero v5 ONNX, 512-sample (32 ms) windows, state tensor carried between calls |
-| `SttService` | speech → text | Whisper.net, `ggml-tiny.en.bin` default, 4 threads, greedy, no timestamps |
+| `SttService` | speech → text | **Default: sherpa-onnx streaming transducer**, Kroko's 2025-08 English Zipformer, 3 threads, decoded per 20 ms frame so most of the utterance is done before the endpoint. **Fallback: Whisper.net** `ggml-tiny.en.bin`, whole utterance, `VOICEAGENT_STT=whisper` |
 | `LlmService` | text → text stream | OllamaSharp `OllamaApiClient` (implements MEAI `IChatClient`), streaming |
 | `SentenceChunker` | text stream → utterances | flush on `.` `?` `!`, or at 90 chars on `,`/`;`, min 20 chars |
 | `TtsService` | utterance → WAV | **Default: Windows SAPI** (`SAPI.SpVoice` + `SAPI.SpFileStream` via COM, offline OS voice, ~200 ms fixed cost per chunk, RTF ≈ 0.01). **Opt-in: KokoroSharp** `KokoroWavSynthesizer`, voice `af_heart`, selected with `VOICEAGENT_TTS=kokoro` (RTF ≈ 1.1 at 3 threads). One WAV per sentence in both cases |
@@ -230,7 +230,9 @@ Additional guards:
   (the AEC residual), with the rule `rms > max(0.015, floor × 2.5)` **and** `VAD ≥ 0.6`.
   Heuristic, pinned by unit tests; the M4 speakers-on run is the acoustic proof.
 - Ignore the first **200 ms** after playback starts (AEC warm-up / device latency).
-- `minSilence` 600 ms default, tunable; `minSpeech` 250 ms.
+- `minSilence` 800 ms default, tunable; `minSpeech` 250 ms. Raised from 600 ms after live runs
+  split a sentence at a natural pause: with a streaming recognizer the endpoint, not the model, is
+  the accuracy risk.
 - **Headphones are the reliable path.** If the speakers-on test still self-triggers at the
   raised threshold, headphones become the documented acceptance condition rather than a
   silent failure.
@@ -242,9 +244,9 @@ These are observations, not targets.
 
 | Stage | Estimate | Measured | Control |
 |---|---|---|---|
-| Silence detection | 600 ms | 600 ms | `minSilence`; lower to 450 ms if it feels sluggish |
-| Streaming Zipformer (default) | decode RTF < 0.5 | **0.32–0.38× realtime** at 3 threads; first partial **299–305 ms**; final flush **107–156 ms** after a 300 ms zero tail | int8, chunk-16/left-64, 3 threads |
-| Whisper tiny.en (fallback) | 300–800 ms for 5 s | **1.4–1.6× realtime** (2.7 s audio → 3.9–4.4 s; a 22 s question → ~30 s) | `VOICEAGENT_STT=whisper`; tiny.en is the floor |
+| Silence detection | 800 ms | 800 ms | `minSilence`; lower if it feels sluggish |
+| Kroko streaming Zipformer (default) | decode RTF < 0.5 | **0.12–0.18× realtime** at 3 threads; first partial **300–375 ms**; final flush **1–9 ms** after a 300 ms zero tail; 67.8 MB | 2025-08 English recipe, no int8, native punctuation and casing, 3 threads |
+| Whisper tiny.en (fallback) | 300–800 ms for 5 s | **1.4–1.6× realtime** (2.7 s audio → 3.9–4.4 s; a 22 s question → ~30 s; measured 0.32–0.40× on 12–18 s clips after fixed overhead is amortised) | `VOICEAGENT_STT=whisper`; whole utterance, so the cost is dead air after the endpoint |
 | LLM first token | 300–1500 ms | **302 / 357 / 2820 ms** (min / median / max over 12 bench calls); first byte = first visible token in every call | **not ours** — cloud routing; mitigate with short replies |
 | First sentence to TTS (Kokoro) | 200–600 ms | **8.2 s wall for 5.36 s of audio** (RTF 1.53 at 4 threads); even a 6-char sentence took 3.5 s | Kokoro on CPU is the wrong default on this box |
 | First sentence to TTS (SAPI) | — | **~200 ms per chunk**; 3 chunks in 597 ms (RTF 0.10 including COM/temp-file overhead); live sessions 176–591 ms | default engine |
@@ -259,6 +261,16 @@ question cost **187 ms** of recognition after the endpoint in a live session (10
 where Whisper needs roughly 25 s. What remains is the LLM's queueing time and the first
 sentence. The live first-audio figure is still unmeasured at the client; the ~3.5–4 s post-ASR
 floor is modelled, not observed.
+
+The recognizer itself was replaced after a live session. The int8 2023-06-26 Zipformer heard
+"i'm a oy / run first / do good / for home zawar / the order is zon be" where the user said
+"I'm AI / run fast / do code / from the world / the world is zombie". fp32 was word for word
+identical (253 MB, +0.06–0.08× RTF) and doubling the right context (left-64 → left-128) did not
+help, so quantization and lookahead were ruled out; hotword biasing (supported on the online
+config via `HotwordsFile` / `HotwordsScore`) did not fix acoustic vowel confusions either. Kroko's
+2025-08 recipe fixed AI, fast, world and zombie at 0.12–0.18× RTF with 1–9 ms finalize. Whisper
+stays the accuracy fallback, but on a 12–18 s question it costs 5–6 s of dead air after the
+endpoint, which is why it is not the default.
 
 Kokoro is kept because it is local and the voice is better; it is a one-variable env switch.
 Its thread sweep (same 67-char sentence, 4.05 s audio): 1 → 1.76×, 2 → 1.27×, 3 → 1.11×,
@@ -318,8 +330,10 @@ Models live in `models/` (gitignored), downloaded on first run.
 | `Microsoft.AspNetCore.SignalR` (framework) | net10.0 | transport |
 | `Microsoft.AspNetCore.SignalR.Protocols.MessagePack` | 10.x | binary payloads |
 | `OllamaSharp` | 5.5.0 | `OllamaApiClient` (MEAI `IChatClient`) |
-| `Whisper.net` | 1.9.1 | STT |
+| `Whisper.net` | 1.9.1 | STT fallback |
 | `Whisper.net.Runtime` | 1.9.1 | native CPU runtime |
+| `org.k2fsa.sherpa.onnx` | 2.0.0 | streaming STT (default) |
+| `org.k2fsa.sherpa.onnx.runtime.win-x64` | 2.0.0 | native runtime for the streaming recognizer |
 | `Microsoft.ML.OnnxRuntime` | 1.x | Silero VAD |
 | `KokoroSharp.CPU` | 0.8.4 | optional TTS (`VOICEAGENT_TTS=kokoro`) + voices + model |
 | Windows SAPI (`SAPI.SpVoice` / `SAPI.SpFileStream`) | OS-provided COM | default TTS on Windows; no NuGet package, offline |

@@ -19,7 +19,7 @@ public static class SttFactory
 
     public static string Description => Mode == SttMode.WholeUtterance
         ? "Whisper tiny.en (whole utterance)"
-        : "Sherpa streaming Zipformer (int8, 3 threads)";
+        : "Kroko streaming Zipformer (2025-08, 3 threads)";
 
     public static ISttService Create() => Mode == SttMode.WholeUtterance
         ? new BufferedWhisperStt(new SttService(ModelPaths.WhisperTinyEn))

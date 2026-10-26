@@ -16,24 +16,24 @@ public static class ModelPaths
 
     public static string Kokoro => Path.Combine(Root, "kokoro.onnx");
 
-    /// <summary>Streaming Zipformer transducer (int8, chunk-16, left-64).</summary>
+    /// <summary>Root for every streaming recognizer; the benchmark enumerates its subdirectories.</summary>
     public static string SherpaDir => Path.Combine(Root, "sherpa");
 
-    public static string SherpaEncoder =>
-        Path.Combine(SherpaDir, "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx");
+    /// <summary>The default streaming recognizer: Kroko's 2025-08 English Zipformer.</summary>
+    public static string SherpaModelDir => Path.Combine(SherpaDir, "kroko-2025-08");
 
-    public static string SherpaDecoder =>
-        Path.Combine(SherpaDir, "decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx");
+    public static string SherpaEncoder => Path.Combine(SherpaModelDir, "encoder.onnx");
 
-    public static string SherpaJoiner =>
-        Path.Combine(SherpaDir, "joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx");
+    public static string SherpaDecoder => Path.Combine(SherpaModelDir, "decoder.onnx");
 
-    public static string SherpaTokens => Path.Combine(SherpaDir, "tokens.txt");
+    public static string SherpaJoiner => Path.Combine(SherpaModelDir, "joiner.onnx");
 
-    public const long SherpaEncoderMinBytes = 70_000_000;
-    public const long SherpaDecoderMinBytes = 1_000_000;
-    public const long SherpaJoinerMinBytes = 200_000;
-    public const long SherpaTokensMinBytes = 4_000;
+    public static string SherpaTokens => Path.Combine(SherpaModelDir, "tokens.txt");
+
+    public const long SherpaEncoderMinBytes = 60_000_000;
+    public const long SherpaDecoderMinBytes = 600_000;
+    public const long SherpaJoinerMinBytes = 300_000;
+    public const long SherpaTokensMinBytes = 5_000;
 
     public static bool SherpaReady =>
         Ready(SherpaEncoder, SherpaEncoderMinBytes) &&
