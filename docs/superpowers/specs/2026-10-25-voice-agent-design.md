@@ -243,27 +243,37 @@ These are observations, not targets.
 | Stage | Estimate | Measured | Control |
 |---|---|---|---|
 | Silence detection | 600 ms | 600 ms | `minSilence`; lower to 450 ms if it feels sluggish |
-| Whisper tiny.en | 300–800 ms for 5 s | **1.4–1.5× realtime** (2.7 s audio → 3.9–4.0 s; a 22 s question → ~22.5 s) | model size, threads; tiny.en is the floor |
-| LLM first token | 300–1500 ms | ~0.3–3 s | **not ours** — cloud routing; mitigate with short replies |
+| Streaming Zipformer (default) | decode RTF < 0.5 | **0.32–0.38× realtime** at 3 threads; first partial **299–305 ms**; final flush **107–156 ms** after a 300 ms zero tail | int8, chunk-16/left-64, 3 threads |
+| Whisper tiny.en (fallback) | 300–800 ms for 5 s | **1.4–1.6× realtime** (2.7 s audio → 3.9–4.4 s; a 22 s question → ~30 s) | `VOICEAGENT_STT=whisper`; tiny.en is the floor |
+| LLM first token | 300–1500 ms | **302 / 357 / 2820 ms** (min / median / max over 12 bench calls); first byte = first visible token in every call | **not ours** — cloud routing; mitigate with short replies |
 | First sentence to TTS (Kokoro) | 200–600 ms | **8.2 s wall for 5.36 s of audio** (RTF 1.53 at 4 threads); even a 6-char sentence took 3.5 s | Kokoro on CPU is the wrong default on this box |
-| First sentence to TTS (SAPI) | — | **~200 ms per chunk**; 3 chunks in 597 ms (RTF 0.10 including COM/temp-file overhead) | default engine |
+| First sentence to TTS (SAPI) | — | **~200 ms per chunk**; 3 chunks in 597 ms (RTF 0.10 including COM/temp-file overhead); live sessions 176–591 ms | default engine |
 | Network / hub | < 10 ms | < 10 ms | localhost |
-| **First audio** | **1.4–3 s realistic** | **~10 s with Kokoro** on a several-second turn; **~5–6 s with SAPI**, dominated by Whisper | client: `TurnStarted` arrival → first audible sentence |
+| **First audio** | **1.4–3 s realistic** | **~10 s with Kokoro** on a several-second turn; **~5–6 s with SAPI before streaming ASR**; live streaming sessions still need the client HUD number | client: `TurnStarted` arrival → first audible sentence |
 | **Barge-in to silence** | **~300 ms from voice onset**; < 50 ms from the cancel | not machine-verifiable here | 250 ms sustain + 30 ms duck; independent of the above |
 
 The honest read: on this hardware the *response* will not feel instant. The *interruption*
 will, and that is what makes it read as a conversation rather than a query box. With SAPI the
-speech path no longer dominates; the remaining lever is streaming ASR (§13 Task 3), which
-targets decode RTF < 0.5 and would cut a long utterance's STT from tens of seconds to sub-second
-while the user is still talking. Until that is measured, the ~3.5–4 s post-ASR floor is modelled,
-not observed.
+speech path no longer dominates, and streaming ASR removes the utterance-length term: a 16.5 s
+question cost **187 ms** of recognition after the endpoint in a live session (10.9 s → 100 ms),
+where Whisper needs roughly 25 s. What remains is the LLM's queueing time and the first
+sentence. The live first-audio figure is still unmeasured at the client; the ~3.5–4 s post-ASR
+floor is modelled, not observed.
 
 Kokoro is kept because it is local and the voice is better; it is a one-variable env switch.
 Its thread sweep (same 67-char sentence, 4.05 s audio): 1 → 1.76×, 2 → 1.27×, 3 → 1.11×,
 4 → 1.16×, so 3 intra-op threads is the optimum on four cores.
 
-System prompt enforces brevity: answer in one or two short sentences unless asked to
-elaborate. This is a latency decision as much as a style one.
+`gemma4:31b-cloud` advertises the `thinking` capability, but under Ollama 0.40.11 it emits no
+reasoning chunks unless `think: true` is set (probe: 0 thinking characters on four default/false
+runs; 287 characters and a 300 ms lead with `think: true`). So the one 7461 ms first-token turn
+observed live was pre-first-byte queue jitter, not hidden reasoning: the same prompt produced
+first bytes of 422 ms, 2080 ms and 7839 ms. Ollama's own `eval_duration`/`prompt_eval_duration`
+are null for this cloud model, so our wall clock is the only source.
+
+System prompt: one or two short spoken sentences by default; longer answers in plain spoken
+sentences when asked. Both are latency decisions as much as style ones.
+
 
 ## 11. Project layout
 

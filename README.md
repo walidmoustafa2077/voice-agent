@@ -199,6 +199,29 @@ same streaming resampler the server uses. The transcript for a given file should
 browser produces for the same audio. `--no-audio` is accepted today for forward compatibility; the
 harness prints events only and does not play the reply.
 
+Two benchmark modes run without any audio:
+
+```bash
+dotnet run --project src/VoiceAgent.Harness -- --stt-bench <file.wav>...   # decode RTF, finalize
+dotnet run --project src/VoiceAgent.Harness -- --llm-bench 12             # first byte / first token
+```
+
+`--llm-bench` sends short prompts to Ollama and prints per-call first-byte, first-token and total
+times plus the min / median / max, which is how the LLM distribution is measured without a
+microphone.
+
+Each turn also prints one machine-readable line, for example:
+
+```
+turn 3 audio=2.5s stt=149ms (0.06x) tts=742ms (0.13x) chunks=3 firstChunk=6 token=1244 llm=1243/1243 cancelled=0 lateSpeech=0 thinkingSpeech=1
+```
+
+`token` is measured from turn start (what the `token` HUD chip shows); `llm` is measured from the
+start of the Ollama request as **first byte / first visible token**. The two differ only if the
+model emits content the assistant does not speak, such as reasoning. `lateSpeech` and
+`thinkingSpeech` are cumulative session counters (see above).
+
+
 ## Tests
 
 ```bash

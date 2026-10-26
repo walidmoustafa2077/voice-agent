@@ -74,6 +74,12 @@ public sealed class VoicePipeline : IDisposable
     private double _synthAudioMs;
     private int _firstChunkChars;
     private int _cancelledThisTurn;
+
+    // LLM wait is the one stage we do not control, so its two halves are logged separately:
+    // time to the first byte of the stream (queueing) and time to the first visible token.
+    private double _llmFirstUpdateMs;
+    private double _llmFirstTokenMs;
+    private double _firstTokenAtMs;
     private readonly BargeInGate _bargeIn = new(250);
     private readonly EchoFloorGate _echoFloor = new();
 
@@ -548,6 +554,9 @@ public sealed class VoicePipeline : IDisposable
             _synthAudioMs = 0;
             _firstChunkChars = 0;
             _cancelledThisTurn = 0;
+            _llmFirstUpdateMs = double.NaN;
+            _llmFirstTokenMs = double.NaN;
+            _firstTokenAtMs = double.NaN;
         }
 
         try
@@ -637,7 +646,10 @@ public sealed class VoicePipeline : IDisposable
                 if (firstDelta)
                 {
                     firstDelta = false;
-                    await TrySendAsync(new StageTiming("firstToken", _turnClock.Elapsed.TotalMilliseconds));
+                    _firstTokenAtMs = _turnClock.Elapsed.TotalMilliseconds;
+                    _llmFirstUpdateMs = _llm.LastFirstUpdateMs;
+                    _llmFirstTokenMs = _llm.LastFirstTokenMs;
+                    await TrySendAsync(new StageTiming("firstToken", _firstTokenAtMs));
                 }
 
                 await TrySendAsync(new AssistantDelta(turnId, delta));
@@ -864,6 +876,7 @@ public sealed class VoicePipeline : IDisposable
     {
         double audio, stt, tts, synthMs;
         int chunks, firstChars, cancels;
+        double firstToken, llmFirst, llmToken;
 
         lock (_gate)
         {
@@ -874,6 +887,9 @@ public sealed class VoicePipeline : IDisposable
             chunks = _sentences.Count;
             firstChars = _firstChunkChars;
             cancels = _cancelledThisTurn;
+            firstToken = _firstTokenAtMs;
+            llmFirst = _llmFirstUpdateMs;
+            llmToken = _llmFirstTokenMs;
         }
 
         var sttRtf = audio > 0.05 ? stt / (audio * 1000) : 0;
@@ -882,9 +898,13 @@ public sealed class VoicePipeline : IDisposable
         Console.WriteLine(
             $"turn {turnId} audio={audio:F1}s stt={stt:F0}ms ({sttRtf:F2}x) " +
             $"tts={tts:F0}ms ({ttsRtf:F2}x) chunks={chunks} firstChunk={firstChars} " +
+            $"token={Ms(firstToken)} llm={Ms(llmFirst)}/{Ms(llmToken)} " +
             $"cancelled={cancels} lateSpeech={_lateSpeechAfterEndpoint} " +
             $"thinkingSpeech={_speechDuringThinking}");
     }
+
+    /// <summary>Rounds a millisecond field, or prints a dash when the stage never ran.</summary>
+    private static string Ms(double value) => double.IsNaN(value) ? "-" : value.ToString("F0");
 
     private async Task SendStateSafeAsync(VoiceEvent evt)
     {

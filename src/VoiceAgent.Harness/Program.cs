@@ -12,11 +12,17 @@ if (args.Length > 0 && args[0] == "--tts-bench")
 if (args.Length > 0 && args[0] == "--stt-bench")
     return SttBench.Run(args.Skip(1).ToArray());
 
+if (args.Length > 0 && args[0] == "--llm-bench")
+    return await LlmBench.RunAsync(args.Length > 1 && int.TryParse(args[1], out var n) ? n : 10);
+
 var path = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
 
 if (path is null || !File.Exists(path))
 {
     Console.Error.WriteLine("usage: VoiceAgent.Harness <file.wav> [--no-audio]");
+    Console.Error.WriteLine("       VoiceAgent.Harness --stt-bench <file.wav>...");
+    Console.Error.WriteLine("       VoiceAgent.Harness --tts-bench");
+    Console.Error.WriteLine("       VoiceAgent.Harness --llm-bench [turns]");
     return 1;
 }
 

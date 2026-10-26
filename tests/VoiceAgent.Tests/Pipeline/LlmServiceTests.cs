@@ -33,6 +33,25 @@ public sealed class LlmServiceTests
     }
 
     [Fact]
+    public async Task Timing_separates_first_byte_from_first_visible_token()
+    {
+        var client = new SlowClient();
+        var llm = new LlmService(client);
+        var history = new ConversationHistory();
+        history.AddUser("hello");
+
+        var deltas = new List<string>();
+        await foreach (var delta in llm.StreamAsync(history.Messages)) deltas.Add(delta);
+
+        // The empty update that opens the stream must not be spoken, but it does mark the first
+        // byte, so queueing time is visible separately from the first real token.
+        Assert.Equal(["hello"], deltas);
+        Assert.False(double.IsNaN(llm.LastFirstUpdateMs));
+        Assert.True(llm.LastFirstTokenMs >= llm.LastFirstUpdateMs);
+        Assert.True(llm.LastTotalMs >= llm.LastFirstTokenMs);
+    }
+
+    [Fact]
     public async Task Streams_tokens_from_gemma()
     {
         using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
@@ -56,5 +75,31 @@ public sealed class LlmServiceTests
 
         Assert.True(deltas.Count >= 2, $"got {deltas.Count} deltas");
         Assert.False(string.IsNullOrWhiteSpace(string.Concat(deltas)));
+    }
+
+    /// <summary>Opens the stream with an update that carries no visible text, then speaks.</summary>
+    private sealed class SlowClient : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(20, cancellationToken);
+
+            // Same shape as a thinking chunk: the stream is open, but there is nothing to say yet.
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "");
+
+            await Task.Delay(20, cancellationToken);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "hello");
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose() { }
     }
 }
