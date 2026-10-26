@@ -8,8 +8,12 @@ public sealed class SpeechSegmenter
 {
     private const int WindowSamples = 512;
     private const int WindowMs = 32;
-    /// <summary>Hard cap on one utterance; callers that stitch audio together must respect it.</summary>
-    public const int MaxUtteranceSamples = 15 * 16000;
+    /// <summary>
+    /// Hard cap on one utterance; callers that stitch audio together must respect it. Sized above
+    /// the pipeline's 20 s endpoint so a long question is not split into two turns just because
+    /// the user kept talking.
+    /// </summary>
+    public const int MaxUtteranceSamples = 30 * 16000;
 
     private readonly IVadModel _vad;
     private readonly VadOptions _options;

@@ -73,13 +73,15 @@ public class SpeechSegmenterTests
     }
 
     [Fact]
-    public void Caps_an_utterance_at_15_seconds()
+    public void Caps_an_utterance_at_30_seconds()
     {
-        var events = Feed(Speech(0, 20000), seconds: 22.0);
+        // The cap sits above the endpointer's 20 s hard cap so a long question is never split
+        // into two turns; it is still a bound on the buffer the recognizer can receive.
+        var events = Feed(Speech(0, 33000), seconds: 35.0);
 
-        var end = events.LastOrDefault(e => !e.IsStart);
+        var end = events.FirstOrDefault(e => !e.IsStart);
         Assert.NotNull(end);
-        Assert.True(end!.Pcm!.Length <= (int)(15.2 * 16000));
+        Assert.InRange(end!.Pcm!.Length, 30 * 16000, 30 * 16000 + 1024);
     }
 
     private static short[] Frame() => TestSignals.Sine(200, 16000, 0.02);

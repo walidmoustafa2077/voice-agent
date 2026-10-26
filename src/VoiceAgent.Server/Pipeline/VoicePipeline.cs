@@ -45,6 +45,17 @@ public sealed class VoicePipeline : IDisposable
     private bool _firstPartialSent;
     private readonly System.Diagnostics.Stopwatch _streamClock = new();
     private bool _finalizedForUtterance;
+
+    // Diagnostics for the endpoint decision: speech that begins just after a finalize (the word
+    // may have arrived too late), and speech that begins while the turn is already thinking.
+    // Both are cumulative and printed on the turn line, so a real-microphone session can show
+    // whether the 600 ms silence window is dropping words before it is tuned.
+    private static readonly TimeSpan LateSpeechWindow = TimeSpan.FromSeconds(1);
+    private long _endpointAt;
+    private bool _previousFrameSpeech;
+    private int _lateSpeechAfterEndpoint;
+    private int _speechDuringThinking;
+
     private string? _mergeText;
     private string _lastUtteranceText = "";
 
@@ -127,6 +138,8 @@ public sealed class VoicePipeline : IDisposable
         var frame = _segmenter.Push(pcm16k);
         var state = _turns.State;
 
+        var frameConsumedBySeed = false;
+
         if (state is VoiceState.Thinking or VoiceState.Speaking)
         {
             var userSpeech = _echoFloor.IsUserSpeech(pcm16k, frame.Probability);
@@ -137,6 +150,17 @@ public sealed class VoicePipeline : IDisposable
                 // Do not return: the frame that fires a barge-in may also carry this utterance's
                 // start event, and dropping that event would leave the stream unowned.
                 await HandleBargeInAsync(state);
+
+                // The segmenter may have opened the interruption while the agent was still
+                // speaking; its IsStart event was ignored in that state and will not repeat. Open
+                // the stream here from the segmenter's buffer (pre-roll plus the first word) so the
+                // utterance is transcribed from its beginning instead of at segment end.
+                if (_streaming is not null && _stream is null
+                    && _segmenter.CurrentUtterance().Length > 0)
+                {
+                    StartStream();
+                    frameConsumedBySeed = true;
+                }
             }
         }
         else
@@ -153,13 +177,16 @@ public sealed class VoicePipeline : IDisposable
         {
             var stream = _stream;
 
-            // The recognizer needs the trailing silence to endpoint, but the silence is not part
-            // of the utterance's audio duration.
-            stream.Accept(pcm16k);
-            if (frame.IsSpeech)
+            if (!frameConsumedBySeed)
             {
-                _streamPcm.AddRange(pcm16k);
-                TrimStreamPcm();
+                // The recognizer needs the trailing silence to endpoint, but the silence is not
+                // part of the utterance's audio duration.
+                stream.Accept(pcm16k);
+                if (frame.IsSpeech)
+                {
+                    _streamPcm.AddRange(pcm16k);
+                    TrimStreamPcm();
+                }
             }
 
             var snapshot = stream.Current;
@@ -273,6 +300,25 @@ public sealed class VoicePipeline : IDisposable
 
         if (forceFinalize)
             await FinalizeStreamAsync(ct);
+
+        // Count speech episodes that start after this utterance was closed, and those that start
+        // while the turn is already with the LLM. Both mean the recognizer was no longer (or never
+        // was) listening, which is the risk of a silence window tuned to the old fixture.
+        var speechStarted = frame.IsSpeech && !_previousFrameSpeech;
+        _previousFrameSpeech = frame.IsSpeech;
+
+        if (speechStarted)
+        {
+            if (_turns.State == VoiceState.Thinking)
+            {
+                _speechDuringThinking++;
+            }
+            else if (_stream is null && _endpointAt != 0
+                && _time.GetElapsedTime(_endpointAt) <= LateSpeechWindow)
+            {
+                _lateSpeechAfterEndpoint++;
+            }
+        }
     }
 
     /// <summary>
@@ -332,6 +378,8 @@ public sealed class VoicePipeline : IDisposable
         var stream = _stream;
         if (stream is null) return;
 
+        _endpointAt = _time.GetTimestamp();
+
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         SttResult result;
@@ -362,10 +410,11 @@ public sealed class VoicePipeline : IDisposable
 
         PrewarmStream();
 
-        var finalText = result.Text;
+        var finalText = TranscriptCleaner.Clean(result.Text);
 
         // Merging is textual now: the cancelled turn's final transcript is prepended, because
-        // the recognizer stream for this utterance heard only the new speech.
+        // the recognizer stream for this utterance heard only the new speech. Keep the merge text
+        // when this final is empty, so the next utterance can still carry it.
         if (finalText.Length > 0 && _mergeText is { Length: > 0 })
         {
             finalText = $"{_mergeText} {finalText}";
@@ -833,7 +882,8 @@ public sealed class VoicePipeline : IDisposable
         Console.WriteLine(
             $"turn {turnId} audio={audio:F1}s stt={stt:F0}ms ({sttRtf:F2}x) " +
             $"tts={tts:F0}ms ({ttsRtf:F2}x) chunks={chunks} firstChunk={firstChars} " +
-            $"cancelled={cancels}");
+            $"cancelled={cancels} lateSpeech={_lateSpeechAfterEndpoint} " +
+            $"thinkingSpeech={_speechDuringThinking}");
     }
 
     private async Task SendStateSafeAsync(VoiceEvent evt)

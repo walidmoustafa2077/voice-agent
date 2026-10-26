@@ -62,6 +62,10 @@ latency, one number per stage:
 While you speak, the recognizer's hypothesis appears in the log in lighter italic text. It is
 tentative: the last word often changes, and the final transcript replaces it when you stop.
 
+The `audio` timer starts when the turn is created — after the recognizer's final flush — so
+endpoint → first audible sound is `final` + `audio`. Every HUD number is measured during the turn,
+not modelled.
+
 **Stop speaking** cancels the current reply without using the microphone, which is handy for
 testing the cancel path.
 
@@ -72,12 +76,27 @@ the LLM stream, drops queued audio, and starts listening on a new turn. The brow
 playback immediately on loud local audio, so the round trip is not audible. The echo floor is
 calibrated from the first 200 ms of each reply to avoid the agent interrupting itself.
 
+The interruption is transcribed from its first word. Microphone audio is deliberately withheld
+from the recognizer while the agent speaks (it is half-duplex, so it cannot be fed its own echo),
+and the segmenter's start event is gone by the time the barge-in is confirmed. The new stream is
+therefore seeded with the last 150 ms of pre-roll plus everything said since the interruption
+began, instead of starting empty at the confirmation point.
+
 A segment that starts while the agent is speaking but never reaches 250 ms (the agent's own echo,
 a cough) is discarded instead of becoming a turn. Tune `speakingVadThreshold` up if your speakers
 leak enough to trigger it.
 
 If you start talking while it is still *thinking*, the new speech is merged with the pending
-utterance into a single transcript and a single LLM call.
+utterance into a single transcript and a single LLM call. On the streaming path the merge is
+textual: the cancelled turn's final transcript is prepended to the new one, because the new
+recognizer stream never heard the first utterance.
+
+The per-turn console line carries two diagnostic counters, cumulative for the session:
+`lateSpeech` counts speech onsets that arrived within 1 s after an endpoint without a new segment
+start, and `thinkingSpeech` counts onsets that arrived while the agent was still thinking. If a
+real-microphone session drops words, these say whether the 600 ms endpoint is responsible. The fix
+in that case is to keep feeding the stream until the turn is committed to the LLM, not to lengthen
+the silence window.
 
 ## Speech engine
 
@@ -159,6 +178,12 @@ at construction — and is why nothing is persisted.
 `vadThreshold` applies while listening; `speakingVadThreshold` applies only while the agent is
 speaking and is deliberately higher so the agent's own voice is harder to trigger on.
 
+The recognizer stream endpoints after `minSilenceMs` of silence (default 600 ms), but only once its
+hypothesis has also been unchanged for 350 ms; the two conditions run in parallel, so an ordinary
+mid-sentence pause is not an endpoint. A hard cap finalizes at 20 s of speech. The segmenter's own
+buffer is capped at 30 s — above that endpoint on purpose, so a 15–20 s question is never split
+into two turns.
+
 ## Console harness
 
 For repeatable tests without a microphone, feed a WAV file through the same pipeline. It prints
@@ -182,9 +207,10 @@ node --test tests/js/playback.test.mjs tests/js/ducking.test.mjs
 ```
 
 The .NET suite covers the resampler, VAD/segmenter, turn state machine, chunking, history,
-barge-in, cancellation boundaries and the end-to-end pipeline. The Node tests cover the browser
-playback queue (ordering, cancel, generation guards) and the ducking controller (120 ms hold,
-350 ms restore, cancel stays silent).
+barge-in, cancellation boundaries, streaming endpointing, half-duplex capture, pre-roll-seeded
+interruptions, long-utterance capping, empty-final discards and the end-to-end pipeline. The Node
+tests cover the browser playback queue (ordering, cancel, generation guards) and the ducking
+controller (120 ms hold, 350 ms restore, cancel stays silent).
 
 Tests that need the Kokoro model return quietly when it is not downloaded yet, so a fresh clone
 reports them as passed rather than skipped.
