@@ -18,7 +18,8 @@ public sealed class SherpaStreamingStt : IStreamingStt, ISttService
     private readonly OnlineRecognizer _recognizer;
 
     public SherpaStreamingStt(
-        string encoder, string decoder, string joiner, string tokens, int threads = Threads)
+        string encoder, string decoder, string joiner, string tokens, int threads = Threads,
+        string? hotwordsFile = null, string? bpeVocab = null, float hotwordsScore = 1.5f)
     {
         var config = new OnlineRecognizerConfig();
         config.FeatConfig.SampleRate = SampleRate;
@@ -34,6 +35,22 @@ public sealed class SherpaStreamingStt : IStreamingStt, ISttService
 
         // The pipeline owns endpointing, so the recognizer must not end the stream on its own.
         config.EnableEndpoint = 0;
+
+        // Contextual biasing: the transducer can be nudged towards a short phrase list without
+        // retraining. sherpa requires beam search for it, and a BPE vocabulary (tokens.txt).
+        if (hotwordsFile is not null)
+        {
+            config.DecodingMethod = "modified_beam_search";
+            config.MaxActivePaths = 4;
+            config.HotwordsFile = hotwordsFile;
+            config.HotwordsScore = hotwordsScore;
+
+            if (bpeVocab is not null)
+            {
+                config.ModelConfig.ModelingUnit = "bpe";
+                config.ModelConfig.BpeVocab = bpeVocab;
+            }
+        }
 
         _recognizer = new OnlineRecognizer(config);
     }

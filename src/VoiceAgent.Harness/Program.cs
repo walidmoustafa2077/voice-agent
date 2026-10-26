@@ -18,6 +18,15 @@ if (args.Length > 0 && args[0] == "--llm-bench")
 if (args.Length > 0 && args[0] == "--compare")
     return await SttCompare.RunAsync(args.Skip(1).ToArray());
 
+if (args.Length > 1 && args[0] == "--stt-hotwords")
+    return await SttModelBench.HotwordsAsync(args.Skip(2).ToArray(), args[1]);
+
+if (args.Length > 0 && args[0] == "--stt-models")
+    return await SttModelBench.RunAsync(args.Skip(1).ToArray());
+
+if (args.Length > 0 && args[0] == "--stt-api")
+    return SttModelBench.CheckApi();
+
 var path = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
 
 if (path is null || !File.Exists(path))
@@ -27,6 +36,9 @@ if (path is null || !File.Exists(path))
     Console.Error.WriteLine("       VoiceAgent.Harness --tts-bench");
     Console.Error.WriteLine("       VoiceAgent.Harness --llm-bench [turns]");
     Console.Error.WriteLine("       VoiceAgent.Harness --compare <file.wav>...");
+    Console.Error.WriteLine("       VoiceAgent.Harness --stt-hotwords <a,b,c> <file.wav>...");
+    Console.Error.WriteLine("       VoiceAgent.Harness --stt-models <file.wav>...");
+    Console.Error.WriteLine("       VoiceAgent.Harness --stt-api");
     return 1;
 }
 
