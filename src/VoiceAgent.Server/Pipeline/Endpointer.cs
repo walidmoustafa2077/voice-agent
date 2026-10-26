@@ -17,7 +17,12 @@ public sealed class Endpointer
     /// </summary>
     public const int SilenceMs = 500;
     public const int StabilityMs = 350;
-    public const int MaxUtteranceMs = 20_000;
+    /// <summary>
+    /// Force a finalize after this much continuous speech. It sits at the segmenter's own buffer
+    /// bound, because streaming decode costs the same on a long utterance and a lower cap only
+    /// risks splitting a long question into two turns.
+    /// </summary>
+    public const int MaxUtteranceMs = 30_000;
 
     private readonly int _silenceThreshold;
     private readonly int _stabilityThreshold;

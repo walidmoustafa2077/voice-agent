@@ -67,6 +67,20 @@ _ = Task.Run(async () =>
         await sttWarm.TranscribeAsync(tone, CancellationToken.None);
 
         warmupLog.LogInformation("speech models warm");
+
+        // Connection warm-up, not filler: the first request to the cloud model pays DNS/TLS and a
+        // cold queue slot (measured at ~2.8 s) that would otherwise be charged to the first turn.
+        var llmWarm = app.Services.GetRequiredService<VoiceAgent.Server.Pipeline.LlmService>();
+        var llmClock = System.Diagnostics.Stopwatch.StartNew();
+        await foreach (var ignored in llmWarm.StreamAsync(
+            [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi")],
+            CancellationToken.None))
+        {
+            break; // the reply is discarded; the round trip is what warms the connection
+        }
+        llmClock.Stop();
+        warmupLog.LogInformation(
+            "llm connection warm in {Elapsed} ms", (long)llmClock.Elapsed.TotalMilliseconds);
     }
     catch (Exception ex)
     {

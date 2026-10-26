@@ -99,7 +99,7 @@ public sealed class Step4Tests
     }
 
     [Fact]
-    public async Task Twenty_seconds_of_speech_is_finalized_by_the_hard_cap()
+    public async Task Thirty_seconds_of_speech_is_finalized_by_the_hard_cap()
     {
         var stt = new ScriptedStreamingStt("a very long question");
         var sink = new RecordingSink();
@@ -110,7 +110,7 @@ public sealed class Step4Tests
 
         // No silence at all: only the endpointer's hard cap can close this utterance. Stop as
         // soon as it finalizes so the remaining audio cannot barge in on the new turn.
-        for (var i = 0; i < 1200; i++)
+        for (var i = 0; i < 1700; i++)
         {
             await pipeline.PushAudioAsync(Loud(1), CancellationToken.None);
             if (stt.BeginCount > 0 && stt.Streams[0].FinalizeCalls > 0) break;
@@ -125,23 +125,25 @@ public sealed class Step4Tests
     }
 
     [Fact]
-    public async Task A_nineteen_second_question_is_one_turn()
+    public async Task A_twenty_two_second_question_is_one_turn_and_one_llm_call()
     {
         var stt = new ScriptedStreamingStt("a long question");
+        var llm = new CountingClient();
         var sink = new RecordingSink();
         var turns = new TurnCoordinator(TimeProvider.System, TimeSpan.FromMilliseconds(500));
         var segmenter = new SpeechSegmenter(new RmsVad(), new VadOptions());
         using var pipeline = new VoicePipeline(
-            segmenter, stt, new LlmService(new CountingClient()), new FakeTts(), sink, turns);
+            segmenter, stt, new LlmService(llm), new FakeTts(), sink, turns);
 
-        // Longer than the segmenter's old 15 s cap but inside the endpointer's 20 s cap.
-        await Push(pipeline, Loud(950));
+        // Past the endpointer's old 20 s cap, which split a live 22 s question into two turns.
+        await Push(pipeline, Loud(1100));
         await Push(pipeline, Quiet(40));
         await (pipeline.CurrentTurn ?? Task.CompletedTask).WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(1, stt.UsedStreamCount);
         Assert.Single(sink.Events.OfType<TurnStarted>());
         Assert.Single(sink.Events.OfType<Transcript>());
+        Assert.Equal(1, llm.Calls);
     }
 
     [Theory]

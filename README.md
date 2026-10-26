@@ -156,6 +156,9 @@ engine misbehaves on your machine.
 
 If it feels sluggish, check the HUD to see which stage is responsible before changing anything.
 
+The server sends one throwaway `hi` request at startup and discards the reply, so the first real
+question does not pay the cloud's cold first-byte cost (measured at ~2.8 s on the first call).
+
 ## Runtime configuration
 
 The page reads `GET /api/config`. A partial in-memory update is accepted by `POST /api/config`
@@ -181,9 +184,9 @@ speaking and is deliberately higher so the agent's own voice is harder to trigge
 
 The recognizer stream endpoints after `minSilenceMs` of silence (default 600 ms), but only once its
 hypothesis has also been unchanged for 350 ms; the two conditions run in parallel, so an ordinary
-mid-sentence pause is not an endpoint. A hard cap finalizes at 20 s of speech. The segmenter's own
-buffer is capped at 30 s — above that endpoint on purpose, so a 15–20 s question is never split
-into two turns.
+mid-sentence pause is not an endpoint. A hard cap finalizes at 30 s of speech, matching the
+segmenter's own buffer; it only protects against a stream that never settles, so a 20 s question
+is one turn.
 
 ## Console harness
 
