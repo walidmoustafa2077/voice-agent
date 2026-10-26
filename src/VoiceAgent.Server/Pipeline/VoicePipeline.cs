@@ -415,6 +415,9 @@ public sealed class VoicePipeline : IDisposable
                 var chunk = await _tts.SynthesizeAsync(text, ct);
                 sw.Stop();
 
+                // A cancelled turn must never send audio, even if the blocking synth finished.
+                if (ct.IsCancellationRequested) return;
+
                 lock (_gate)
                 {
                     _ttsWallMs += sw.Elapsed.TotalMilliseconds;
@@ -424,8 +427,6 @@ public sealed class VoicePipeline : IDisposable
                     if (index < _durations.Count)
                         _durations[index] = chunk.DurationMs;
                 }
-
-                if (ct.IsCancellationRequested) return;
 
                 if (first)
                 {

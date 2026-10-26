@@ -27,7 +27,9 @@ public sealed class SapiTtsService : ITtsService, IDisposable
         {
             ct.ThrowIfCancellationRequested();
 
-            // SAPI's Speak() is a blocking COM call; keep it off the SignalR and pipeline threads.
+            // SAPI's Speak() is a blocking COM call and cannot be cancelled mid-sentence; a
+            // cancelled turn therefore waits at most one sentence. The token is checked before
+            // the call and again after it, so no audio is ever handed back for a dead turn.
             return await Task.Run(() => Render(text, ct), ct).ConfigureAwait(false);
         }
         finally

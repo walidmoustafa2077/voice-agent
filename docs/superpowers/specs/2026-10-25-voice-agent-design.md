@@ -27,7 +27,7 @@ drives the whole design is barge-in with echo cancellation.
 | # | Goal | How we know |
 |---|------|-------------|
 | G1 | Phone-like turn-taking | Playback silenced within ~300 ms of the user starting to speak; cancel fires at ≤ 250 ms of sustained speech |
-| G2 | We own the whole speech stack | Silero VAD, Whisper.net, Kokoro TTS all run in .NET. Only the LLM is remote (Ollama cloud route). No Web Speech, no `speechSynthesis` |
+| G2 | The speech stack is local and offline | Silero VAD and Whisper.net run in .NET on our own models; TTS is an OS-provided offline voice (Windows SAPI) by default, with Kokoro as a local opt-in. Only the LLM is remote (Ollama cloud route). No Web Speech, no `speechSynthesis`, no cloud speech service |
 | G3 | One command to run | `dotnet run` then open one page. No npm, no build step |
 | G4 | Text alongside voice | Live transcript pane: user text, assistant text, state |
 | G5 | Honest latency | First audio typically under 3 s on CPU (see §10); every stage timed and shown |
@@ -125,7 +125,7 @@ browser or a microphone.
 │    ├─ SttService (Whisper.net, tiny.en)                     │
 │    ├─ LlmService (OllamaApiClient, streaming)               │
 │    ├─ SentenceChunker                                       │
-│    └─ TtsService (KokoroSharp, af_heart)                    │
+│    └─ TtsService (SAPI by default, Kokoro opt-in)           │
 │  TurnContext { CancellationTokenSource, state, history }    │
 └──────────────────────────────────────────────────────────────┘
                  │ HTTP
@@ -143,7 +143,7 @@ browser or a microphone.
 | `SttService` | speech → text | Whisper.net, `ggml-tiny.en.bin` default, 4 threads, greedy, no timestamps |
 | `LlmService` | text → text stream | OllamaSharp `OllamaApiClient` (implements MEAI `IChatClient`), streaming |
 | `SentenceChunker` | text stream → utterances | flush on `.` `?` `!`, or at 90 chars on `,`/`;`, min 20 chars |
-| `TtsService` | utterance → WAV | KokoroSharp `KokoroWavSynthesizer`, voice `af_heart`, one WAV per sentence |
+| `TtsService` | utterance → WAV | **Default: Windows SAPI** (`SAPI.SpVoice` + `SAPI.SpFileStream` via COM, offline OS voice, ~200 ms fixed cost per chunk, RTF ≈ 0.01). **Opt-in: KokoroSharp** `KokoroWavSynthesizer`, voice `af_heart`, selected with `VOICEAGENT_TTS=kokoro` (RTF ≈ 1.1 at 3 threads). One WAV per sentence in both cases |
 
 ### Wire protocol
 
@@ -237,19 +237,30 @@ Additional guards:
 
 ## 10. Latency budget (CPU-only, cloud LLM)
 
-| Stage | Estimate | Control |
-|---|---|---|
-| Silence detection | 600 ms | `minSilence`; lower to 450 ms if it feels sluggish |
-| Whisper tiny.en, 5 s utterance | 300–800 ms | model size, threads; tiny.en is the floor |
-| LLM first token | 300–1500 ms | **not ours** — cloud routing; mitigate with short replies |
-| First sentence to TTS | 200–600 ms (optimistic; M3 measures it) | Kokoro on CPU; first sentence kept short, 90-char cap |
-| Network / hub | < 10 ms | localhost |
-| **First audio** | **1.4–3 s realistic** | client: `TurnStarted` arrival → first audible sentence |
-| **Barge-in to silence** | **~300 ms from voice onset**; < 50 ms from the cancel | 250 ms sustain + 30 ms duck; independent of the above |
+Measured on the development box (AMD PRO A10-8770 R7, 4 cores / 4 logical, 2016 APU, no GPU).
+These are observations, not targets.
+
+| Stage | Estimate | Measured | Control |
+|---|---|---|---|
+| Silence detection | 600 ms | 600 ms | `minSilence`; lower to 450 ms if it feels sluggish |
+| Whisper tiny.en | 300–800 ms for 5 s | **1.4–1.5× realtime** (2.7 s audio → 3.9–4.0 s; a 22 s question → ~22.5 s) | model size, threads; tiny.en is the floor |
+| LLM first token | 300–1500 ms | ~0.3–3 s | **not ours** — cloud routing; mitigate with short replies |
+| First sentence to TTS (Kokoro) | 200–600 ms | **8.2 s wall for 5.36 s of audio** (RTF 1.53 at 4 threads); even a 6-char sentence took 3.5 s | Kokoro on CPU is the wrong default on this box |
+| First sentence to TTS (SAPI) | — | **~200 ms per chunk**; 3 chunks in 597 ms (RTF 0.10 including COM/temp-file overhead) | default engine |
+| Network / hub | < 10 ms | < 10 ms | localhost |
+| **First audio** | **1.4–3 s realistic** | **~10 s with Kokoro** on a several-second turn; **~5–6 s with SAPI**, dominated by Whisper | client: `TurnStarted` arrival → first audible sentence |
+| **Barge-in to silence** | **~300 ms from voice onset**; < 50 ms from the cancel | not machine-verifiable here | 250 ms sustain + 30 ms duck; independent of the above |
 
 The honest read: on this hardware the *response* will not feel instant. The *interruption*
-will, and that is what makes it read as a conversation rather than a query box. We measure
-each stage in milestone M1 and report real numbers, not these estimates.
+will, and that is what makes it read as a conversation rather than a query box. With SAPI the
+speech path no longer dominates; the remaining lever is streaming ASR (§13 Task 3), which
+targets decode RTF < 0.5 and would cut a long utterance's STT from tens of seconds to sub-second
+while the user is still talking. Until that is measured, the ~3.5–4 s post-ASR floor is modelled,
+not observed.
+
+Kokoro is kept because it is local and the voice is better; it is a one-variable env switch.
+Its thread sweep (same 67-char sentence, 4.05 s audio): 1 → 1.76×, 2 → 1.27×, 3 → 1.11×,
+4 → 1.16×, so 3 intra-op threads is the optimum on four cores.
 
 System prompt enforces brevity: answer in one or two short sentences unless asked to
 elaborate. This is a latency decision as much as a style one.
@@ -300,7 +311,8 @@ Models live in `models/` (gitignored), downloaded on first run.
 | `Whisper.net` | 1.9.1 | STT |
 | `Whisper.net.Runtime` | 1.9.1 | native CPU runtime |
 | `Microsoft.ML.OnnxRuntime` | 1.x | Silero VAD |
-| `KokoroSharp.CPU` | 0.8.4 | TTS + voices + model download |
+| `KokoroSharp.CPU` | 0.8.4 | optional TTS (`VOICEAGENT_TTS=kokoro`) + voices + model |
+| Windows SAPI (`SAPI.SpVoice` / `SAPI.SpFileStream`) | OS-provided COM | default TTS on Windows; no NuGet package, offline |
 | `NAudio` | 2.x | console harness only |
 
 `Microsoft.Extensions.AI.Ollama` is deliberately **not** used: it ships preview-only and
@@ -315,7 +327,7 @@ Each milestone is runnable and observable.
 | M0 | Hub + worklet + level meter | Speak; see a live level bar; server counts frames at 50/s; all pinned packages restore on `net10.0` |
 | M1 | VAD + Whisper | Segmenter test written first against a fixed WAV, then speech segments appear as text; **logged STT latency** |
 | M2 | LLM streaming | Text streams into the pane; **logged first-token latency** |
-| M3 | Kokoro TTS | Hear a reply; **logged first-audio latency** |
+| M3 | TTS (SAPI default, Kokoro opt-in) | Hear a reply; **logged first-audio latency** |
 | M4 | Barge-in | Two numbers logged: voice onset → silence (~300 ms) and cancel → silence (< 50 ms). Interrupts during `Thinking` too. Duck-and-restore works on a cough. No self-interruption across 5 minutes with speakers at the raised threshold, or headphones documented as the condition |
 | M5 | Polish | Latency HUD per stage, config endpoint, error states, harness works |
 
@@ -327,7 +339,9 @@ Each milestone is runnable and observable.
 | Whisper on CPU too slow for long utterances | 2 s+ lag | tiny.en; cap utterance at 15 s; log per-utterance timing |
 | AEC insufficient on laptop speakers | self-interruption | 250 ms guard; headphones; raise threshold; loopback test |
 | Silero VAD state handling bugs (v5 state tensors) | wrong segmentation | unit test with a fixed WAV; compare against expected segment count |
-| Kokoro first-run download (~320 MB) | slow start | pre-download step in README |
+| Kokoro first-run download (~320 MB) | slow start | **not downloaded in the default SAPI configuration**; pre-download step in README only for `VOICEAGENT_TTS=kokoro` |
+| SAPI voice quality is below Kokoro and varies by Windows install | sounds robotic on some machines | documented; `VOICEAGENT_TTS=kokoro` restores the neural voice at ~1.5× slower than realtime |
+| SAPI synthesis is a blocking COM call and cannot be cancelled mid-sentence | a cancelled turn can spend up to one sentence synthesizing | cancel checked before and after the call; audio is dropped if the turn was cancelled |
 | .NET 10 + SignalR binary size limits | messages dropped | `MaximumReceiveMessageSize = 1 MB`, 640-byte frames |
 | Mic runs at 44.1 kHz, or the browser ignores the requested rate | aliasing degrades both Whisper and Silero | server-side streaming resampler, state carried across frames; 10 kHz attenuation test |
 | Silero v5 needs the previous 64 samples prepended to each 512-sample window | plausible-looking but wrong probabilities | fixed-WAV segmenter test written before the implementation |
@@ -336,7 +350,10 @@ Each milestone is runnable and observable.
 
 1. **Browser as audio pipe**, not console, because AEC is free there and CPU is scarce.
 2. **Whisper `tiny.en`** as the default, `base.en` behind a config flag.
-3. **Kokoro voice `af_heart`** (American English, warm, neutral).
+3. **TTS is Windows SAPI by default, Kokoro opt-in.** The benchmark forced this: Kokoro is
+   ~1.5× slower than realtime on four cores while SAPI is ~0.01×. G2 was narrowed from "we own
+   every model" to "local and offline"; the voice quality trade-off is real and reversible with
+   `VOICEAGENT_TTS=kokoro`. Kokoro keeps `af_heart` and 3 threads when selected.
 4. **No tools/RAG in v1.** One seam in `LlmService` where a tool loop would go.
 5. **English only.**
 6. **No persistence.** History lives in memory per session.

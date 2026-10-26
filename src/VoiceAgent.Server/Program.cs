@@ -32,6 +32,15 @@ foreach (var model in VoiceAgent.Server.ModelDownloader.Required)
 // Pay the ONNX graph construction and first-inference cost once, in the background, so the
 // first real turn is not the one that warms Whisper and the speech engine.
 var warmupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Warmup");
+
+// One line on the record: every speech stage shares this CPU. Streaming ASR would run while the
+// user speaks, when nothing else is busy, but a Thinking-time merge or the Whisper fallback can
+// overlap synthesis and slow both.
+warmupLog.LogInformation(
+    "cpu: {Cores} logical cores - Whisper, TTS and VAD share them; " +
+    "expect STT and synthesis to slow when a merge overlaps them",
+    Environment.ProcessorCount);
+
 _ = Task.Run(async () =>
 {
     try
