@@ -13,6 +13,9 @@ public sealed record TurnStarted(int TurnId, DateTimeOffset At) : VoiceEvent;
 /// <summary>Server-side stage latency, surfaced in the HUD. One clock: the server's.</summary>
 public sealed record StageTiming(string Stage, double Ms) : VoiceEvent;
 
+/// <summary>A live, tentative hypothesis. Replaced by <see cref="Transcript"/> when the turn starts.</summary>
+public sealed record TranscriptPartial(string Text) : VoiceEvent;
+
 /// <summary>Carries the turn id so a transcript that raced a cancel cannot create a phantom bubble.</summary>
 public sealed record Transcript(int TurnId, string Text) : VoiceEvent;
 

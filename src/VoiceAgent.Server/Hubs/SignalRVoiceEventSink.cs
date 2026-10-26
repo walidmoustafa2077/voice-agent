@@ -16,6 +16,7 @@ public sealed class SignalRVoiceEventSink(IHubContext<VoiceHub> hub, string conn
                 e.State.ToString().ToLowerInvariant(), e.VadThreshold, ct),
             TurnStarted e => client.SendAsync("turnStarted", e.TurnId, e.At.ToUnixTimeMilliseconds(), ct),
             Transcript e => client.SendAsync("transcript", e.TurnId, e.Text, ct),
+            TranscriptPartial e => client.SendAsync("transcriptPartial", e.Text, ct),
             AssistantDelta e => client.SendAsync("assistantDelta", e.TurnId, e.Text, ct),
             AudioChunk e => client.SendAsync("audioChunk", e.TurnId, e.Index, e.Wav, e.DurationMs, ct),
             TurnCancelled e => client.SendAsync("turnCancelled",

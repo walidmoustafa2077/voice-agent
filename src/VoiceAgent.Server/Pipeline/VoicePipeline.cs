@@ -16,6 +16,7 @@ public sealed class VoicePipeline : IDisposable
 
     private readonly SpeechSegmenter _segmenter;
     private readonly ISttService _stt;
+    private readonly IStreamingStt? _streaming;
     private readonly LlmService _llm;
     private readonly ITtsService _tts;
     private readonly IVoiceEventSink _sink;
@@ -26,11 +27,27 @@ public sealed class VoicePipeline : IDisposable
     private readonly System.Diagnostics.Stopwatch _turnClock = new();
     private readonly List<string> _sentences = [];
     private readonly List<double> _durations = [];
-    private readonly Queue<short[]> _pending = new();
+    private readonly Queue<(string? Text, short[] Pcm, double SttMs)> _pending = new();
     private readonly object _gate = new();
 
     private Task? _turnTask;
     private short[] _lastUtterancePcm = [];
+
+    // Live streaming recognizer state. `_stream` is non-null only between speech onset and the
+    // endpointer firing; `_finalizedThisUtterance` keeps the segmenter's later end event from
+    // starting a second turn for audio already transcribed.
+    private ISttStream? _stream;
+    private ISttStream? _prewarmed;
+    private Endpointer? _endpointer;
+    private readonly List<short> _streamPcm = [];
+    private int _partialSeq;
+    private int _partialCooldown;
+    private bool _firstPartialSent;
+    private readonly System.Diagnostics.Stopwatch _streamClock = new();
+    private bool _finalizedForUtterance;
+    private string? _mergeText;
+    private string _lastUtteranceText = "";
+
     private short[]? _mergeBase;
     private long _mergeAt;
     private bool _userAddedThisTurn;
@@ -61,6 +78,7 @@ public sealed class VoicePipeline : IDisposable
     {
         _segmenter = segmenter;
         _stt = stt;
+        _streaming = stt as IStreamingStt;
         _llm = llm;
         _tts = tts;
         _sink = sink;
@@ -102,9 +120,9 @@ public sealed class VoicePipeline : IDisposable
         get { lock (_gate) return _turnTask; }
     }
 
-    public Task PushAudioAsync(short[] pcm16k, CancellationToken ct)
+    public async Task PushAudioAsync(short[] pcm16k, CancellationToken ct)
     {
-        if (_disposed) return Task.CompletedTask;
+        if (_disposed) return;
 
         var frame = _segmenter.Push(pcm16k);
         var state = _turns.State;
@@ -115,7 +133,10 @@ public sealed class VoicePipeline : IDisposable
             if (_bargeIn.Push(userSpeech, pcm16k.Length / 16))
             {
                 _bargeIn.Reset();
-                return HandleBargeInAsync(state);
+
+                // Do not return: the frame that fires a barge-in may also carry this utterance's
+                // start event, and dropping that event would leave the stream unowned.
+                await HandleBargeInAsync(state);
             }
         }
         else
@@ -123,21 +144,78 @@ public sealed class VoicePipeline : IDisposable
             _bargeIn.Reset();
         }
 
+        // Live transcription: feed the recognizer while the user is speaking, and only then. The
+        // recognizer is half-duplex by design, so its own echo can never reach it while the agent
+        // talks (that window is VAD-only, and a barge-in restarts capture). Idle counts as
+        // feedable too: the harness never calls StartSession, and a fresh connection is idle.
+        if (_stream is not null && !_finalizedForUtterance
+            && state is not VoiceState.Speaking)
+        {
+            var stream = _stream;
+
+            // The recognizer needs the trailing silence to endpoint, but the silence is not part
+            // of the utterance's audio duration.
+            stream.Accept(pcm16k);
+            if (frame.IsSpeech)
+            {
+                _streamPcm.AddRange(pcm16k);
+                TrimStreamPcm();
+            }
+
+            var snapshot = stream.Current;
+
+            if (_partialCooldown > 0) _partialCooldown--;
+            if (snapshot.Text.Length > 0 && snapshot.ChangeSeq != _partialSeq && _partialCooldown == 0)
+            {
+                _partialSeq = snapshot.ChangeSeq;
+                _partialCooldown = 5; // at most ~10 updates per second
+
+                if (!_firstPartialSent)
+                {
+                    _firstPartialSent = true;
+                    await TrySendAsync(
+                        new StageTiming("firstPartial", _streamClock.Elapsed.TotalMilliseconds));
+                }
+
+                await TrySendAsync(new TranscriptPartial(snapshot.Text));
+            }
+
+            var endpoint = _endpointer!.Push(frame.IsSpeech, snapshot.Text, pcm16k.Length / 16);
+            if (endpoint)
+            {
+                // The endpoint closes the utterance. Reset the segmenter so any audio after it
+                // (a soft word the VAD missed, the start of the next question) forms a fresh
+                // segment instead of being discarded with this one's tail.
+                _segmenter.Reset();
+                await FinalizeStreamAsync(ct);
+            }
+        }
+
+        var forceFinalize = false;
+
         foreach (var evt in frame.Events)
         {
-            // Start events carry no PCM; they only mark onset.
+            // Start events carry no PCM; they only mark onset and open this utterance's stream.
             if (evt.IsStart)
             {
+                var drop = state == VoiceState.Speaking;
+
                 lock (_gate)
                 {
                     if (_mergeBase is not null && _time.GetElapsedTime(_mergeAt) > MergeWindow)
                         _mergeBase = null;
+                    if (_mergeText is not null && _time.GetElapsedTime(_mergeAt) > MergeWindow)
+                        _mergeText = null;
 
                     // A segment that starts while the agent is speaking is either its own echo
                     // or a blip too short to barge in. Only a confirmed barge-in may turn it
                     // into a user turn; drop it when it ends instead.
-                    _dropUtterance = state == VoiceState.Speaking;
+                    _dropUtterance = drop;
+                    _finalizedForUtterance = false;
                 }
+
+                if (!drop && _streaming is not null)
+                    StartStream();
 
                 continue;
             }
@@ -150,6 +228,22 @@ public sealed class VoicePipeline : IDisposable
                 if (_dropUtterance)
                 {
                     _dropUtterance = false;
+                    continue;
+                }
+
+                // This utterance's transcript was already produced from its stream. The audio
+                // must not be transcribed a second time.
+                if (_finalizedForUtterance)
+                {
+                    _finalizedForUtterance = false;
+                    continue;
+                }
+
+                if (_stream is not null)
+                {
+                    // The recognizer has not endpointed yet; let it finish rather than running
+                    // the whole utterance through a second recognition pass.
+                    forceFinalize = true;
                     continue;
                 }
 
@@ -169,15 +263,162 @@ public sealed class VoicePipeline : IDisposable
                 if (_turnTask is { IsCompleted: false })
                 {
                     if (_pending.Count >= PendingLimit) _pending.Dequeue();
-                    _pending.Enqueue(pcm);
+                    _pending.Enqueue((null, pcm, 0));
                     continue;
                 }
 
-                _turnTask = RunTurnsAsync(pcm, ct);
+                _turnTask = RunTurnsAsync(null, pcm, 0, ct);
             }
         }
 
-        return Task.CompletedTask;
+        if (forceFinalize)
+            await FinalizeStreamAsync(ct);
+    }
+
+    /// <summary>
+    /// Opens a recognizer stream for the utterance that just started. The segmenter already owns
+    /// the pre-roll plus everything said so far, so that buffer seeds the stream and the current
+    /// frame is not fed twice.
+    /// </summary>
+    private void StartStream()
+    {
+        if (_streaming is null) return;
+
+        ISttStream stream;
+        lock (_gate)
+        {
+            if (_stream is not null)
+            {
+                // Defensive: a new utterance must never inherit the previous utterance's stream.
+                _stream.Dispose();
+                _stream = null;
+                _endpointer = null;
+            }
+
+            stream = _prewarmed ?? _streaming.Begin();
+            _prewarmed = null;
+        }
+
+        _stream = stream;
+        _endpointer = new Endpointer(_config.MinSilenceMs);
+        _partialSeq = 0;
+        _partialCooldown = 0;
+        _firstPartialSent = false;
+        _streamClock.Restart();
+        _finalizedForUtterance = false;
+        _streamPcm.Clear();
+
+        var seed = _segmenter.CurrentUtterance();
+        if (seed.Length > 0)
+        {
+            stream.Accept(seed);
+            _streamPcm.AddRange(seed);
+            TrimStreamPcm();
+        }
+    }
+
+    private void TrimStreamPcm()
+    {
+        if (_streamPcm.Count <= SpeechSegmenter.MaxUtteranceSamples) return;
+        _streamPcm.RemoveRange(0, _streamPcm.Count - SpeechSegmenter.MaxUtteranceSamples);
+    }
+
+    /// <summary>
+    /// Finalizes the live stream and starts the turn from its text. The audio is kept only so the
+    /// merge path can still reuse it; no second recognition pass runs for this utterance.
+    /// </summary>
+    private async Task FinalizeStreamAsync(CancellationToken ct)
+    {
+        var stream = _stream;
+        if (stream is null) return;
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        SttResult result;
+        try
+        {
+            result = await stream.FinalizeAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            stream.Dispose();
+            _stream = null;
+            _endpointer = null;
+            return;
+        }
+        catch (Exception ex)
+        {
+            await TrySendAsync(new PipelineError($"stt: {ex.Message}"));
+            result = new SttResult("", 0);
+        }
+
+        stopwatch.Stop();
+
+        stream.Dispose();
+        _stream = null;
+        _endpointer = null;
+        _finalizedForUtterance = true;
+        _partialCooldown = 0;
+
+        PrewarmStream();
+
+        var finalText = result.Text;
+
+        // Merging is textual now: the cancelled turn's final transcript is prepended, because
+        // the recognizer stream for this utterance heard only the new speech.
+        if (finalText.Length > 0 && _mergeText is { Length: > 0 })
+        {
+            finalText = $"{_mergeText} {finalText}";
+            _mergeText = null;
+        }
+
+        if (finalText.Length == 0) return;
+
+        var audio = _streamPcm.ToArray();
+        _streamPcm.Clear();
+
+        lock (_gate)
+        {
+            if (_turnTask is { IsCompleted: false })
+            {
+                if (_pending.Count >= PendingLimit) _pending.Dequeue();
+                _pending.Enqueue((finalText, audio, stopwatch.Elapsed.TotalMilliseconds));
+            }
+            else
+            {
+                _turnTask = RunTurnsAsync(finalText, audio, stopwatch.Elapsed.TotalMilliseconds, ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates the next recognizer stream before it is needed: stream construction and its first
+    /// feature frames are a measurable part of the short-utterance overhead.
+    /// </summary>
+    private void PrewarmStream()
+    {
+        if (_streaming is null) return;
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var stream = _streaming.Begin();
+                lock (_gate)
+                {
+                    _prewarmed?.Dispose();
+                    _prewarmed = stream;
+                }
+
+                Console.WriteLine($"stream prewarm {stopwatch.Elapsed.TotalMilliseconds:F0} ms");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"stream prewarm failed: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>
@@ -192,15 +433,16 @@ public sealed class VoicePipeline : IDisposable
         return TrySendAsync(cancelled);
     }
 
-    private async Task RunTurnsAsync(short[] first, CancellationToken ct)
+    private async Task RunTurnsAsync(
+        string? text, short[] first, double sttMs, CancellationToken ct)
     {
-        var pcm = first;
+        var next = (Text: text, Pcm: first, SttMs: sttMs);
 
-        while (pcm is not null)
+        while (true)
         {
             try
             {
-                await HandleUtteranceAsync(pcm, ct);
+                await HandleUtteranceAsync(next.Text, next.Pcm, next.SttMs, ct);
             }
             catch (OperationCanceledException)
             {
@@ -212,21 +454,28 @@ public sealed class VoicePipeline : IDisposable
             {
                 await TrySendAsync(new PipelineError($"turn failed: {ex.Message}"));
                 var cancelled = CancelTurn("error", merge: false, keepUtterance: false);
-        await TrySendAsync(cancelled);
+                await TrySendAsync(cancelled);
             }
 
             lock (_gate)
             {
-                pcm = _pending.Count > 0 ? _pending.Dequeue() : null;
-
-                // Released under the lock so the next utterance cannot be appended to a loop
-                // that has already decided to exit.
-                if (pcm is null) _turnTask = null;
+                if (_pending.Count > 0)
+                {
+                    next = _pending.Dequeue();
+                }
+                else
+                {
+                    // Released under the lock so the next utterance cannot be appended to a loop
+                    // that has already decided to exit.
+                    _turnTask = null;
+                    return;
+                }
             }
         }
     }
 
-    private async Task HandleUtteranceAsync(short[] pcm, CancellationToken sessionCt)
+    private async Task HandleUtteranceAsync(
+        string? text, short[] pcm, double sttMs, CancellationToken sessionCt)
     {
         if (_disposed) return;
 
@@ -254,7 +503,7 @@ public sealed class VoicePipeline : IDisposable
 
         try
         {
-            await RunUtteranceAsync(pcm, turnId, sessionCt);
+            await RunUtteranceAsync(text, pcm, sttMs, turnId, sessionCt);
         }
         finally
         {
@@ -262,20 +511,31 @@ public sealed class VoicePipeline : IDisposable
         }
     }
 
-    private async Task RunUtteranceAsync(short[] pcm, int turnId, CancellationToken sessionCt)
+    private async Task RunUtteranceAsync(
+        string? text, short[] pcm, double sttMs, int turnId, CancellationToken sessionCt)
     {
         var ct = _turns.TurnToken;
 
         await TrySendAsync(new TurnStarted(turnId, DateTimeOffset.UtcNow));
 
         SttResult result;
-        try
+        if (text is not null)
         {
-            result = await _stt.TranscribeAsync(pcm, ct);
+            // The stream already heard this utterance; only the final flush is left, and that
+            // cost is what the user feels after they stop talking.
+            result = new SttResult(text, sttMs);
+            if (sttMs > 0) await TrySendAsync(new StageTiming("finalize", sttMs));
         }
-        catch (OperationCanceledException)
+        else
         {
-            return;
+            try
+            {
+                result = await _stt.TranscribeAsync(pcm, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
         }
 
         if (ct.IsCancellationRequested) return;
@@ -294,6 +554,7 @@ public sealed class VoicePipeline : IDisposable
         {
             if (ct.IsCancellationRequested) return;
             _transcriptSentThisTurn = true;
+            _lastUtteranceText = result.Text;
         }
 
         await TrySendAsync(new Transcript(turnId, result.Text));
@@ -361,15 +622,15 @@ public sealed class VoicePipeline : IDisposable
             total = _durations.Sum();
         }
 
-        var text = full.ToString().Trim();
+        var reply = full.ToString().Trim();
 
         lock (_gate)
         {
             if (ct.IsCancellationRequested) return;
 
-            if (text.Length > 0)
+            if (reply.Length > 0)
             {
-                _history.AddAssistant(text);
+                _history.AddAssistant(reply);
                 _assistantAddedThisTurn = true;
             }
         }
@@ -503,12 +764,23 @@ public sealed class VoicePipeline : IDisposable
             if (merge)
             {
                 if (_userAddedThisTurn) _history.RemoveLastUser();
-                _mergeBase = _lastUtterancePcm.Length > 0 ? _lastUtterancePcm : null;
                 _mergeAt = _time.GetTimestamp();
+
+                if (_streaming is null)
+                {
+                    _mergeBase = _lastUtterancePcm.Length > 0 ? _lastUtterancePcm : null;
+                }
+                else
+                {
+                    // Streaming merges by text: the new stream never heard the cancelled turn.
+                    _mergeBase = null;
+                    _mergeText = _lastUtteranceText.Length > 0 ? _lastUtteranceText : null;
+                }
             }
             else
             {
                 _mergeBase = null;
+                _mergeText = null;
             }
 
             var sentences = _sentences.ToArray();
@@ -590,13 +862,22 @@ public sealed class VoicePipeline : IDisposable
 
     public void Dispose()
     {
+        ISttStream? stream;
+        ISttStream? prewarmed;
+
         lock (_gate)
         {
             if (_disposed) return;
             _disposed = true;
             _pending.Clear();
+            stream = _stream;
+            prewarmed = _prewarmed;
+            _stream = null;
+            _prewarmed = null;
         }
 
+        stream?.Dispose();
+        prewarmed?.Dispose();
         _turns.Cancel("dispose");
     }
 }

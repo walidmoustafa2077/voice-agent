@@ -16,6 +16,10 @@ public sealed class ConsoleVoiceEventSink : IVoiceEventSink
                 Console.WriteLine($"USER: {e.Text}");
                 break;
 
+            case TranscriptPartial e:
+                Console.WriteLine($"  ~ {e.Text}");
+                break;
+
             case AssistantDelta e:
                 Console.Write(e.Text);
                 break;

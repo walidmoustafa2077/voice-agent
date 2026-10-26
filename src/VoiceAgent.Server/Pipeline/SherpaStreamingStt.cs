@@ -12,7 +12,7 @@ public sealed class SherpaStreamingStt : IStreamingStt, ISttService
 {
     public const int SampleRate = 16000;
     public const int FrameSamples = 320; // 20 ms
-    public const int TailPaddingMs = 500;
+    public const int TailPaddingMs = 300;
     public const int Threads = 3;
 
     private readonly OnlineRecognizer _recognizer;

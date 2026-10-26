@@ -8,7 +8,7 @@ The language model is the only remote piece. It is served through your local Oll
 (`gemma4:31b-cloud`), so the audio path never leaves the box.
 
 ```
-mic → VAD (Silero) → STT (Whisper tiny.en) → LLM (Ollama) → TTS (SAPI or Kokoro) → speaker
+mic → VAD (Silero) → STT (sherpa-onnx streaming Zipformer) → LLM (Ollama) → TTS (SAPI or Kokoro) → speaker
 ```
 
 The whole thing is a cascade, not a speech-to-speech model. That is what makes it cheap to run on
@@ -23,8 +23,10 @@ a CPU: the only models that run per turn are tiny, and the large model is remote
   Firefox and Safari are not supported.
 - **Headphones.** The agent's own voice reaches the microphone through the speakers, and echo
   cancellation only goes so far. Without headphones you will see phantom barge-ins.
-- ~100 MB free disk for the default speech models (Silero VAD and Whisper `tiny.en`). Opting into
-  Kokoro adds about 325 MB. A CPU is enough; no GPU is used.
+- ~100 MB free disk for the default speech models (Silero VAD and the sherpa-onnx streaming
+  Zipformer, about 73 MB). The Whisper fallback adds about 78 MB and is only downloaded when you
+  select it with `VOICEAGENT_STT=whisper`; Kokoro adds about 325 MB and is only downloaded with
+  `VOICEAGENT_TTS=kokoro`. A CPU is enough; no GPU is used.
 
 ## First run
 
@@ -32,9 +34,10 @@ a CPU: the only models that run per turn are tiny, and the large model is remote
 dotnet run --project src/VoiceAgent.Server
 ```
 
-On startup the server downloads Silero VAD and Whisper `tiny.en` into `models/` if they are missing
-(about 80 MB). Kokoro is only downloaded when you select it (see below). It logs each file as it
-finishes. Downloads go to `*.part` files and are only moved into place after they pass a
+On startup the server downloads Silero VAD and the sherpa-onnx recognizer (encoder, decoder, joiner
+and token table) into `models/` if they are missing, about 80 MB in total. Whisper `tiny.en` is only
+downloaded when you select the fallback with `VOICEAGENT_STT=whisper`, and Kokoro only when you
+select it with `VOICEAGENT_TTS=kokoro`. It logs each file as it finishes. Downloads go to `*.part` files and are only moved into place after they pass a
 minimum-size sanity check, so a killed download cannot poison later runs.
 
 Then open <http://localhost:5192>, click **Start microphone**, and allow microphone access.
@@ -46,13 +49,18 @@ The header shows the turn state (`idle` → `listening` → `thinking` → `spea
 your transcript and the agent's reply as it streams. The HUD under the log reports the last turn's
 latency, one number per stage:
 
-| chip    | meaning                                              |
-| ------- | ---------------------------------------------------- |
-| `vad`   | active VAD threshold (rises while speaking)          |
-| `stt`   | speech end → transcript                              |
-| `token` | speech end → first LLM token                         |
-| `synth` | speech end → first synthesized audio chunk           |
-| `audio` | turn started → first audible sound in the browser    |
+| chip      | meaning                                                    |
+| --------- | ---------------------------------------------------------- |
+| `vad`     | active VAD threshold (rises while speaking)                |
+| `partial` | speech onset → first tentative transcript                  |
+| `stt`     | endpoint → finalized transcript (the streaming flush)      |
+| `final`   | time spent in the final recognizer flush                   |
+| `token`   | speech end → first LLM token                               |
+| `synth`   | speech end → first synthesized audio chunk                 |
+| `audio`   | turn started → first audible sound in the browser          |
+
+While you speak, the recognizer's hypothesis appears in the log in lighter italic text. It is
+tentative: the last word often changes, and the final transcript replaces it when you stop.
 
 **Stop speaking** cancels the current reply without using the microphone, which is handy for
 testing the cancel path.
@@ -72,6 +80,18 @@ If you start talking while it is still *thinking*, the new speech is merged with
 utterance into a single transcript and a single LLM call.
 
 ## Speech engine
+
+Speech recognition runs locally with sherpa-onnx's streaming Zipformer (int8, 3 threads). It
+decodes while you talk, so by the time you stop, most of the utterance is already transcribed and
+only a short flush remains. The whole-utterance Whisper `tiny.en` path is kept as a fallback:
+
+```bash
+set VOICEAGENT_STT=whisper     # PowerShell: $env:VOICEAGENT_STT="whisper"
+dotnet run --project src/VoiceAgent.Server
+```
+
+Both engines are offline and local. Only one runs at a time, and the selected engine is reported in
+`GET /api/config` under `models.stt`.
 
 Two TTS engines are available; the server picks one at startup.
 
@@ -95,18 +115,24 @@ is used.
 ## Latency expectations
 
 On a CPU-only machine the local stages dominate. Measured on the development machine (4 cores,
-2016 APU) with a warm Whisper model:
+2016 APU):
 
-- Whisper `tiny.en` runs at about **1.2–1.5x realtime**, so a 20 s question costs 25–30 s of
-  transcription. That is the largest single cost.
+- Streaming Zipformer decodes at about **0.32–0.38x realtime** at 3 threads. Because it runs while
+  you speak, the cost you feel at the end is only the final flush: roughly **110–150 ms** after a
+  300 ms zero tail is fed to close the recognizer. The first tentative transcript appears about
+  300 ms after you start talking.
 - SAPI synthesis is effectively free (~0.1x realtime); the first audio arrives a fraction of a
   second after the first sentence is known.
 - Kokoro, if selected, runs at ~1.1x realtime and adds several seconds before the first sound.
 
-With SAPI, budget roughly **1–2 s of local work after you stop talking**, plus the time it takes
-the remote model to produce its first token and the first sentence. A 20 s question still takes
-20 s+ to transcribe because recognition is whole-utterance today. Nothing is spoken before the
-first sentence is complete.
+With SAPI, budget roughly **150–300 ms of local work after you stop talking**, plus the time it
+takes the remote model to produce its first token and the first sentence. A 20 s question no longer
+costs 20 s of transcription up front — it is decoded as you speak — but nothing is spoken before
+the first sentence is complete.
+
+The Whisper fallback (`VOICEAGENT_STT=whisper`) is whole-utterance and runs at about **1.4–1.6x
+realtime**, so a 20 s question costs 25–30 s before the LLM is called. Use it only if the streaming
+engine misbehaves on your machine.
 
 If it feels sluggish, check the HUD to see which stage is responsible before changing anything.
 

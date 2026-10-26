@@ -10,6 +10,8 @@ const stopBtn = document.getElementById('stop');
 
 const hudVad = document.getElementById('hud-vad');
 const hudStt = document.getElementById('hud-stt');
+const hudPartial = document.getElementById('hud-partial');
+const hudFinalize = document.getElementById('hud-finalize');
 const hudToken = document.getElementById('hud-token');
 const hudSynth = document.getElementById('hud-synth');
 const hudAudio = document.getElementById('hud-audio');
@@ -55,6 +57,12 @@ let turnStartedAt = 0;
 let firstAudioLogged = false;
 let agentLine = null;
 let lastUserLine = null;
+let partialLine = null;
+
+function clearPartial() {
+  partialLine?.remove();
+  partialLine = null;
+}
 
 function ensurePlayback() {
   if (playCtx) return;
@@ -149,13 +157,22 @@ async function connect() {
   });
   connection.on('stageTiming', (stage, ms) => {
     const target = stage === 'stt' ? hudStt
+      : stage === 'firstPartial' ? hudPartial
+      : stage === 'finalize' ? hudFinalize
       : stage === 'firstToken' ? hudToken
       : stage === 'firstSynth' ? hudSynth
       : null;
     if (target) target.textContent = `${Math.round(ms)} ms`;
   });
+  connection.on('transcriptPartial', (text) => {
+    if (!text || stateEl.textContent !== 'listening') return;
+    if (!partialLine) partialLine = note('', 'user tentative');
+    partialLine.textContent = text;
+    logEl.scrollTop = logEl.scrollHeight;
+  });
   connection.on('transcript', (turnId, text) => {
     if (turnId !== currentTurnId) return;
+    clearPartial();
     lastUserLine = note(text, 'user');
     agentLine = null;
   });
@@ -171,6 +188,7 @@ async function connect() {
     firstAudioLogged = false;
     playbackStartedThisTurn = false;
     agentLine = null;
+    clearPartial();
     ducking.end();
   });
   connection.on('audioChunk', (turnId, index, wav, durationMs) => {
@@ -193,6 +211,7 @@ async function connect() {
 
     ducking.cancel();
     playback?.flush();
+    clearPartial();
     playbackStartedThisTurn = false;
 
     if (agentLine) {
