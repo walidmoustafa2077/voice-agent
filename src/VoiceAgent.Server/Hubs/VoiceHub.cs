@@ -8,7 +8,7 @@ using VoiceAgent.Server.Sessions;
 namespace VoiceAgent.Server.Hubs;
 
 public sealed class VoiceHub(
-    Lazy<SttService> stt,
+    Lazy<ISttService> stt,
     LlmService llm,
     Lazy<ITtsService> tts,
     IHubContext<VoiceHub> hub,

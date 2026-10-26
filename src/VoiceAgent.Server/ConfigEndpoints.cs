@@ -23,7 +23,7 @@ public static class ConfigEndpoints
                 c.MaxHistoryMessages,
                 models = new
                 {
-                    stt = ModelPaths.WhisperTinyEn,
+                    stt = VoiceAgent.Server.Pipeline.SttFactory.Description,
                     vad = ModelPaths.SileroVad,
                     tts = Pipeline.TtsFactory.Description,
                     llm = "gemma4:31b-cloud @ http://localhost:11434",

@@ -5,8 +5,8 @@ builder.Services.AddSignalR(options =>
     options.MaximumReceiveMessageSize = 1_048_576;
 }).AddMessagePackProtocol();
 
-builder.Services.AddSingleton(new Lazy<VoiceAgent.Server.Pipeline.SttService>(
-    () => new VoiceAgent.Server.Pipeline.SttService(VoiceAgent.Server.ModelPaths.WhisperTinyEn)));
+builder.Services.AddSingleton(new Lazy<VoiceAgent.Server.Pipeline.ISttService>(
+    VoiceAgent.Server.Pipeline.SttFactory.Create));
 
 builder.Services.AddSingleton(new VoiceAgent.Server.Pipeline.LlmService(
     new OllamaSharp.OllamaApiClient(
@@ -46,7 +46,7 @@ _ = Task.Run(async () =>
     try
     {
         var ttsWarm = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.ITtsService>>().Value;
-        var sttWarm = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.SttService>>().Value;
+        var sttWarm = app.Services.GetRequiredService<Lazy<VoiceAgent.Server.Pipeline.ISttService>>().Value;
         await ttsWarm.SynthesizeAsync("Ready.", CancellationToken.None);
 
         // Constructing SttService only loads the model; Whisper's first inference is the real
