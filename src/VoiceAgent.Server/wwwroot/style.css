@@ -63,6 +63,17 @@ h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: .02em; }
 }
 .hud b { font-variant-numeric: tabular-nums; font-weight: 600; color: #b6c2cf; }
 
+/* The microphone label is long on USB and webcam devices; keep the chip on one line. */
+.hud #hud-mic {
+  display: inline-block;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-weight: 500;
+}
+
 .tentative { opacity: .55; font-style: italic; }
 
 footer { display: flex; align-items: center; gap: 12px; }

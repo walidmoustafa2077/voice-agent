@@ -1,4 +1,5 @@
 using System.Text;
+using VoiceAgent.Server.Audio;
 using VoiceAgent.Server.Contracts;
 using VoiceAgent.Server.Options;
 using VoiceAgent.Server.Sessions;
@@ -22,6 +23,7 @@ public sealed class VoicePipeline : IDisposable
     private readonly IVoiceEventSink _sink;
     private readonly TurnCoordinator _turns;
     private readonly ConversationHistory _history;
+    private readonly AudioDebugWriter _debugAudio;
     private readonly VoiceConfig _config;
     private readonly TimeProvider _time;
     private readonly System.Diagnostics.Stopwatch _turnClock = new();
@@ -91,7 +93,8 @@ public sealed class VoicePipeline : IDisposable
         IVoiceEventSink sink,
         TurnCoordinator turns,
         VoiceConfig? config = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        AudioDebugWriter? debugAudio = null)
     {
         _segmenter = segmenter;
         _stt = stt;
@@ -103,6 +106,7 @@ public sealed class VoicePipeline : IDisposable
         _config = config ?? new VoiceConfig();
         _time = time ?? TimeProvider.System;
         _history = new ConversationHistory(_config.MaxHistoryMessages);
+        _debugAudio = debugAudio ?? AudioDebugWriter.FromEnvironment();
 
         _turns.StateChanged += state =>
         {
@@ -599,6 +603,10 @@ public sealed class VoicePipeline : IDisposable
         if (ct.IsCancellationRequested) return;
 
         _sttWallMs = result.LatencyMs;
+
+        // Exactly what the recognizer heard, plus its own transcript, so an accuracy complaint
+        // can be reproduced offline instead of guessed at.
+        _debugAudio.Write(turnId, pcm, result.Text);
 
         if (result.Text.Length == 0)
         {

@@ -25,7 +25,7 @@ public static class SttBench
 
         foreach (var file in files)
         {
-            var pcm = Read16k(file);
+            var pcm = Wav16k.Read(file);
             using var stream = stt.Begin();
 
             var accept = Stopwatch.StartNew();
@@ -53,31 +53,5 @@ public static class SttBench
         }
 
         return 0;
-    }
-
-    private static short[] Read16k(string path)
-    {
-        using var reader = new AudioFileReader(path);
-        var channels = reader.WaveFormat.Channels;
-        var rate = reader.WaveFormat.SampleRate;
-        var buffer = new float[rate / 50 * channels];
-        var pcm = new List<short>();
-        var resampler = new VoiceAgent.Server.Audio.StreamingResampler(rate);
-
-        int read;
-        while ((read = reader.Read(buffer.AsSpan())) > 0)
-        {
-            var mono = new short[read / channels];
-            for (var i = 0; i < mono.Length; i++)
-            {
-                var sum = 0f;
-                for (var c = 0; c < channels; c++) sum += buffer[i * channels + c];
-                mono[i] = (short)Math.Clamp(sum / channels * 32767f, short.MinValue, short.MaxValue);
-            }
-
-            pcm.AddRange(rate == 16000 ? mono : resampler.Process(mono));
-        }
-
-        return [.. pcm];
     }
 }

@@ -16,7 +16,8 @@ public sealed class VoiceHub(
 {
     private const string SessionKey = "session";
 
-    public async Task<string> StartSession(string? systemPrompt, int micSampleRate)
+    public async Task<string> StartSession(
+        string? systemPrompt, int micSampleRate, string? microphone = null)
     {
         if (micSampleRate is not (16000 or 44100 or 48000))
             throw new HubException("micSampleRate must be 16000, 44100 or 48000");
@@ -39,6 +40,11 @@ public sealed class VoiceHub(
 
         var cts = new CancellationTokenSource();
         var cfg = config.Current;
+
+        // Logged once per session: which physical microphone the browser picked, and the rate the
+        // capture context actually runs at. Both matter when the transcript looks wrong.
+        Console.WriteLine(
+            $"session: microphone=\"{microphone ?? "unknown"}\" capture={micSampleRate} Hz");
         var vad = new SileroVadModel(ModelPaths.SileroVad);
         var segmenter = new SpeechSegmenter(vad, new VadOptions
         {

@@ -6,6 +6,12 @@ public static class ModelPaths
 
     public static string WhisperTinyEn => Path.Combine(Root, "ggml-tiny.en.bin");
 
+    /// <summary>Optional second Whisper size for the offline accuracy comparison; never downloaded.</summary>
+    public static string WhisperBaseEn => Path.Combine(Root, "ggml-base.en.bin");
+
+    /// <summary>True when <see cref="WhisperBaseEn"/> is present and plausibly complete (~142 MB).</summary>
+    public static bool WhisperBaseEnReady => Ready(WhisperBaseEn, 100_000_000);
+
     public static string SileroVad => Path.Combine(Root, "silero_vad.onnx");
 
     public static string Kokoro => Path.Combine(Root, "kokoro.onnx");

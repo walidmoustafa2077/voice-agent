@@ -15,6 +15,7 @@ const hudFinalize = document.getElementById('hud-finalize');
 const hudToken = document.getElementById('hud-token');
 const hudSynth = document.getElementById('hud-synth');
 const hudAudio = document.getElementById('hud-audio');
+const hudMic = document.getElementById('hud-mic');
 
 let vadNormal = 0.5;
 let vadSpeaking = 0.6;
@@ -286,10 +287,15 @@ async function startCapture() {
     worklet.connect(sink);
 
     const rate = micContext.sampleRate;
+    const label = mediaStream.getAudioTracks()[0]?.label || 'unknown';
+
     ensurePlayback();
-    await connection.invoke('StartSession', null, rate);
+    await connection.invoke('StartSession', null, rate, label);
     setState('listening');
-    note(`microphone at ${rate} Hz`);
+
+    hudMic.textContent = label;
+    hudMic.title = `${label} (${rate} Hz)`;
+    note(`microphone "${label}" at ${rate} Hz`);
   } catch (err) {
     await stopCapture();
     throw err;

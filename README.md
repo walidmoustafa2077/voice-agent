@@ -51,6 +51,7 @@ latency, one number per stage:
 
 | chip      | meaning                                                    |
 | --------- | ---------------------------------------------------------- |
+| `mic`     | microphone the browser picked (hover for its capture rate) |
 | `vad`     | active VAD threshold (rises while speaking)                |
 | `partial` | speech onset → first tentative transcript                  |
 | `stt`     | endpoint → finalized transcript (the streaming flush)      |
@@ -220,6 +221,30 @@ turn 3 audio=2.5s stt=149ms (0.06x) tts=742ms (0.13x) chunks=3 firstChunk=6 toke
 start of the Ollama request as **first byte / first visible token**. The two differ only if the
 model emits content the assistant does not speak, such as reasoning. `lateSpeech` and
 `thinkingSpeech` are cumulative session counters (see above).
+
+## Debugging recognition
+
+Set `VOICEAGENT_DEBUG_AUDIO=1` before starting the server and every turn saves the exact 16 kHz
+PCM the recognizer heard, plus the transcript it produced:
+
+```
+debug/turn-3.wav           # speech only: pre-roll plus voiced frames, no endpointing tail
+debug/turn-3.stream.txt    # what the live recognizer returned for that audio
+```
+
+A merged turn keeps the merged text, so a `turn-N.stream.txt` can contain an earlier utterance that
+the WAV beside it does not. Compare the saved audio against Whisper offline:
+
+```bash
+dotnet run --project src/VoiceAgent.Harness -- --compare debug/turn-3.wav
+```
+
+It prints the live transcript, the saved one when the `.stream.txt` sits next to the WAV, Whisper
+`tiny.en`, Whisper `base.en` when `models/ggml-base.en.bin` is present, and the words only one of
+them produced. Use it for an accuracy complaint: it runs on the audio the server actually heard.
+
+The selected microphone and its capture rate are logged once per session
+(`session: microphone="..." capture=48000 Hz`) and shown in the `mic` HUD chip.
 
 
 ## Tests

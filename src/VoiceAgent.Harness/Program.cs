@@ -15,6 +15,9 @@ if (args.Length > 0 && args[0] == "--stt-bench")
 if (args.Length > 0 && args[0] == "--llm-bench")
     return await LlmBench.RunAsync(args.Length > 1 && int.TryParse(args[1], out var n) ? n : 10);
 
+if (args.Length > 0 && args[0] == "--compare")
+    return await SttCompare.RunAsync(args.Skip(1).ToArray());
+
 var path = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
 
 if (path is null || !File.Exists(path))
@@ -23,6 +26,7 @@ if (path is null || !File.Exists(path))
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-bench <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --tts-bench");
     Console.Error.WriteLine("       VoiceAgent.Harness --llm-bench [turns]");
+    Console.Error.WriteLine("       VoiceAgent.Harness --compare <file.wav>...");
     return 1;
 }
 
