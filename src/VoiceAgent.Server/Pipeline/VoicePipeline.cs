@@ -608,6 +608,10 @@ public sealed class VoicePipeline : IDisposable
         // can be reproduced offline instead of guessed at.
         _debugAudio.Write(turnId, pcm, result.Text);
 
+        // A recognizer writes "C sharp" (and often hears "T sharp") for C#; repair known spoken
+        // terms before the transcript pane and the model see them. The debug pair keeps raw text.
+        result = result with { Text = SpokenTerms.Normalize(result.Text) };
+
         if (result.Text.Length == 0)
         {
             _turns.BeginListening();
