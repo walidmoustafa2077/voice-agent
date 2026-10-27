@@ -25,8 +25,14 @@ if (args.Length > 0 && args[0] == "--compare")
 if (args.Length > 0 && args[0] == "--stt-beam")
     return await SttBeamBench.RunAsync(args.Skip(1).ToArray());
 
+if (args.Length > 0 && args[0] == "--parakeet-bench")
+    return await ParakeetBench.RunAsync(args.Skip(1).ToArray());
+
 if (args.Length > 0 && args[0] == "--tts-api")
     return TtsApiProbe.Describe();
+
+if (args.Length > 0 && args[0] == "--asr-api")
+    return AsrApiProbe.Describe();
 
 if (args.Length > 1 && args[0] == "--stt-hotwords")
     return await SttModelBench.HotwordsAsync(args.Skip(2).ToArray(), args[1]);
@@ -49,6 +55,7 @@ if (path is null || !File.Exists(path))
     Console.Error.WriteLine("       VoiceAgent.Harness --tts-api");
     Console.Error.WriteLine("       VoiceAgent.Harness --supertonic-bench");
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-beam <file.wav>...");
+    Console.Error.WriteLine("       VoiceAgent.Harness --parakeet-bench <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-hotwords <a,b,c> <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-models <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-api");
