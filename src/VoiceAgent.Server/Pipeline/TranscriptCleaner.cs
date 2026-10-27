@@ -24,6 +24,28 @@ public static partial class TranscriptCleaner
     /// language model and the transcript pane can read: lowercase it when it is shouting, capitalise
     /// the first letter, and end with a full stop.
     /// </summary>
+    /// <summary>
+    /// True when a final transcript cannot be a real sentence: no words at all, or every word is
+    /// a consonant-only fragment such as "Sgt." that a language model would otherwise answer.
+    /// Deliberately conservative, so "Yes." and "No." stay valid.
+    /// </summary>
+    public static bool IsImplausible(string text)
+    {
+        var words = WordPattern().Matches(text);
+        if (words.Count == 0) return true;
+
+        foreach (Match word in words)
+        {
+            if (word.Value.AsSpan().IndexOfAny("aeiouy") >= 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    [GeneratedRegex(@"[\p{L}\p{N}]+")]
+    private static partial Regex WordPattern();
+
     public static string SentenceCase(string text)
     {
         var trimmed = text.Trim();

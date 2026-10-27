@@ -19,7 +19,7 @@ public sealed class ConversationHistoryTests
     }
 
     [Fact]
-    public void Interruption_before_any_sentence_drops_the_message()
+    public void Interruption_before_any_sentence_leaves_a_marker()
     {
         var history = new ConversationHistory();
         history.AddUser("tell me about Moshi");
@@ -27,8 +27,11 @@ public sealed class ConversationHistoryTests
 
         history.TruncateLastAssistant(["First sentence.", "Second sentence."], lastPlayedIndex: -1);
 
-        Assert.Single(history.Messages);
+        // Nothing was heard, but the message must not vanish: two adjacent user turns made the
+        // model answer the previous question again. A marker keeps the boundary visible.
+        Assert.Equal(2, history.Messages.Count);
         Assert.Equal("tell me about Moshi", history.Messages[0].Text);
+        Assert.Contains("interrupted", history.Messages[^1].Text);
     }
 
     [Fact]

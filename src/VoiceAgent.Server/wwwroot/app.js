@@ -178,7 +178,12 @@ async function connect() {
     agentLine = null;
   });
   connection.on('assistantDelta', (turnId, text) => {
-    if (turnId !== currentTurnId) return;
+    if (turnId !== currentTurnId) {
+      // A reply rendered no bubble once because its deltas carried a stale turn id. Keep the
+      // evidence in the console instead of dropping it silently.
+      console.warn('assistantDelta for stale turn', turnId, 'current', currentTurnId);
+      return;
+    }
     if (!agentLine) agentLine = note('', 'agent');
     agentLine.textContent += text;
     logEl.scrollTop = logEl.scrollHeight;

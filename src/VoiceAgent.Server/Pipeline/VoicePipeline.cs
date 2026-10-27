@@ -630,7 +630,12 @@ public sealed class VoicePipeline : IDisposable
         {
             if (ct.IsCancellationRequested) return;
 
-            _history.AddUser(result.Text);
+            // A recognizer can emit a consonant-only fragment ("Sgt.") for a real question; the
+            // model would try to answer it. Mark that as unintelligible so the prompt's
+            // ask-them-to-repeat rule takes over instead of inventing a reply.
+            _history.AddUser(TranscriptCleaner.IsImplausible(result.Text)
+                ? "[unintelligible speech]"
+                : result.Text);
             _userAddedThisTurn = true;
         }
 
@@ -862,7 +867,16 @@ public sealed class VoicePipeline : IDisposable
             // Only trim if this turn actually added its assistant message; otherwise the last
             // assistant message belongs to an earlier turn.
             if (_assistantAddedThisTurn)
+            {
                 _history.TruncateLastAssistant(sentences, lastPlayed);
+            }
+            else
+            {
+                // Cancelled while the reply was still streaming, so no assistant message reached
+                // history. Leave a marker: otherwise the next question sits directly after this
+                // one and the model answers both as a single request.
+                _history.MarkInterrupted();
+            }
 
             _assistantAddedThisTurn = false;
             _userAddedThisTurn = false;

@@ -58,13 +58,32 @@ public sealed class ConversationHistory(int maxMessages = 40)
 
             if (lastPlayedIndex < 0)
             {
-                _messages.RemoveAt(_messages.Count - 1);
+                // Nothing was heard. A marker keeps the next user message from reading as a
+                // continuation of this question, which made the model answer the old one again.
+                _messages[^1] = new ChatMessage(
+                    ChatRole.Assistant, "[the answer was interrupted before it was heard]");
                 return;
             }
 
             var count = Math.Min(lastPlayedIndex + 1, sentences.Count);
             var heard = string.Join(' ', sentences.Take(count));
             _messages[^1] = new ChatMessage(ChatRole.Assistant, $"{heard} [interrupted]");
+        }
+    }
+
+    /// <summary>
+    /// Records that a reply was cut off before any assistant message reached history, so the
+    /// next user message is not read as a continuation of the interrupted question.
+    /// </summary>
+    public void MarkInterrupted()
+    {
+        lock (_gate)
+        {
+            if (_messages.Count == 0 || _messages[^1].Role != ChatRole.User) return;
+
+            _messages.Add(new ChatMessage(
+                ChatRole.Assistant, "[the answer was interrupted by the user]"));
+            TrimLocked();
         }
     }
 
