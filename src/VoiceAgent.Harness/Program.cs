@@ -22,6 +22,9 @@ if (args.Length > 0 && args[0] == "--llm-bench")
 if (args.Length > 0 && args[0] == "--compare")
     return await SttCompare.RunAsync(args.Skip(1).ToArray());
 
+if (args.Length > 0 && args[0] == "--stt-beam")
+    return await SttBeamBench.RunAsync(args.Skip(1).ToArray());
+
 if (args.Length > 0 && args[0] == "--tts-api")
     return TtsApiProbe.Describe();
 
@@ -45,6 +48,7 @@ if (path is null || !File.Exists(path))
     Console.Error.WriteLine("       VoiceAgent.Harness --compare <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --tts-api");
     Console.Error.WriteLine("       VoiceAgent.Harness --supertonic-bench");
+    Console.Error.WriteLine("       VoiceAgent.Harness --stt-beam <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-hotwords <a,b,c> <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-models <file.wav>...");
     Console.Error.WriteLine("       VoiceAgent.Harness --stt-api");

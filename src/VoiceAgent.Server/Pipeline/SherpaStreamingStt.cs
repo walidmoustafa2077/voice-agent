@@ -19,7 +19,8 @@ public sealed class SherpaStreamingStt : IStreamingStt, ISttService
 
     public SherpaStreamingStt(
         string encoder, string decoder, string joiner, string tokens, int threads = Threads,
-        string? hotwordsFile = null, string? bpeVocab = null, float hotwordsScore = 1.5f)
+        string? hotwordsFile = null, string? bpeVocab = null, float hotwordsScore = 1.5f,
+        bool beamSearch = false)
     {
         var config = new OnlineRecognizerConfig();
         config.FeatConfig.SampleRate = SampleRate;
@@ -50,6 +51,14 @@ public sealed class SherpaStreamingStt : IStreamingStt, ISttService
                 config.ModelConfig.ModelingUnit = "bpe";
                 config.ModelConfig.BpeVocab = bpeVocab;
             }
+        }
+
+        else if (beamSearch)
+        {
+            // Several hypotheses can rescue a word whose first-best decoding is wrong. It costs
+            // more CPU per frame but no extra latency after the endpoint.
+            config.DecodingMethod = "modified_beam_search";
+            config.MaxActivePaths = 4;
         }
 
         _recognizer = new OnlineRecognizer(config);
