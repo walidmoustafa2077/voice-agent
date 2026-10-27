@@ -6,6 +6,7 @@ public enum TtsEngine
 {
     Sapi,
     Kokoro,
+    Supertonic,
 }
 
 /// <summary>
@@ -19,12 +20,20 @@ public static class TtsFactory
 
     public static bool IsKokoro => Engine == TtsEngine.Kokoro;
 
-    public static string Description => Engine == TtsEngine.Kokoro
-        ? "Kokoro af_heart (local ONNX)"
-        : "Windows SAPI (built-in offline voice)";
+    public static bool IsSupertonic => Engine == TtsEngine.Supertonic;
+
+    public static string Description => Engine switch
+    {
+        TtsEngine.Supertonic => "Supertonic 3 (int8, sherpa-onnx)",
+        TtsEngine.Kokoro => "Kokoro af_heart (local ONNX)",
+        _ => "Windows SAPI (built-in offline voice)",
+    };
 
     public static ITtsService Create()
     {
+        if (IsSupertonic)
+            return new SupertonicTtsService(ModelPaths.SupertonicDir);
+
         if (IsKokoro || !OperatingSystem.IsWindows())
             return new TtsService(ModelPaths.Kokoro, threads: 3);
 
@@ -41,6 +50,9 @@ public static class TtsFactory
 
         if (string.Equals(requested, "kokoro", StringComparison.OrdinalIgnoreCase))
             return TtsEngine.Kokoro;
+
+        if (string.Equals(requested, "supertonic", StringComparison.OrdinalIgnoreCase))
+            return TtsEngine.Supertonic;
 
         if (string.Equals(requested, "sapi", StringComparison.OrdinalIgnoreCase))
             return OperatingSystem.IsWindows() ? TtsEngine.Sapi : TtsEngine.Kokoro;

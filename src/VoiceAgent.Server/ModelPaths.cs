@@ -12,6 +12,27 @@ public static class ModelPaths
     /// <summary>True when <see cref="WhisperBaseEn"/> is present and plausibly complete (~142 MB).</summary>
     public static bool WhisperBaseEnReady => Ready(WhisperBaseEn, 100_000_000);
 
+    /// <summary>Supertonic 3 (int8) for sherpa-onnx's OfflineTts; an opt-in TTS engine.</summary>
+    public static string SupertonicDir => Path.Combine(Root, "supertonic");
+
+    public static string SupertonicDurationPredictor => Path.Combine(SupertonicDir, "duration_predictor.int8.onnx");
+    public static string SupertonicTextEncoder => Path.Combine(SupertonicDir, "text_encoder.int8.onnx");
+    public static string SupertonicVectorEstimator => Path.Combine(SupertonicDir, "vector_estimator.int8.onnx");
+    public static string SupertonicVocoder => Path.Combine(SupertonicDir, "vocoder.int8.onnx");
+    public static string SupertonicConfig => Path.Combine(SupertonicDir, "tts.json");
+    public static string SupertonicIndexer => Path.Combine(SupertonicDir, "unicode_indexer.bin");
+    public static string SupertonicVoice => Path.Combine(SupertonicDir, "voice.bin");
+
+    /// <summary>True when every Supertonic file is present and plausibly complete (~96 MB).</summary>
+    public static bool SupertonicReady =>
+        Ready(SupertonicDurationPredictor, 1_400_000) &&
+        Ready(SupertonicTextEncoder, 25_000_000) &&
+        Ready(SupertonicVectorEstimator, 38_000_000) &&
+        Ready(SupertonicVocoder, 24_000_000) &&
+        Ready(SupertonicConfig, 8_000) &&
+        Ready(SupertonicIndexer, 250_000) &&
+        Ready(SupertonicVoice, 500_000);
+
     public static string SileroVad => Path.Combine(Root, "silero_vad.onnx");
 
     public static string Kokoro => Path.Combine(Root, "kokoro.onnx");

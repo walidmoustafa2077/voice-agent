@@ -25,6 +25,44 @@ public static class ModelDownloader
         "https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro.onnx",
         ModelPaths.Kokoro, ModelPaths.KokoroMinBytes);
 
+    private const string SupertonicBase =
+        "https://huggingface.co/csukuangfj2/sherpa-onnx-supertonic-tts-int8-2026-03-06/resolve/main/";
+
+    public static ModelFile SupertonicDurationPredictor { get; } = new(
+        "Supertonic duration predictor",
+        SupertonicBase + "duration_predictor.int8.onnx",
+        ModelPaths.SupertonicDurationPredictor, 1_400_000);
+
+    public static ModelFile SupertonicTextEncoder { get; } = new(
+        "Supertonic text encoder",
+        SupertonicBase + "text_encoder.int8.onnx",
+        ModelPaths.SupertonicTextEncoder, 25_000_000);
+
+    public static ModelFile SupertonicVectorEstimator { get; } = new(
+        "Supertonic vector estimator",
+        SupertonicBase + "vector_estimator.int8.onnx",
+        ModelPaths.SupertonicVectorEstimator, 38_000_000);
+
+    public static ModelFile SupertonicVocoder { get; } = new(
+        "Supertonic vocoder",
+        SupertonicBase + "vocoder.int8.onnx",
+        ModelPaths.SupertonicVocoder, 24_000_000);
+
+    public static ModelFile SupertonicConfig { get; } = new(
+        "Supertonic config",
+        SupertonicBase + "tts.json",
+        ModelPaths.SupertonicConfig, 8_000);
+
+    public static ModelFile SupertonicIndexer { get; } = new(
+        "Supertonic unicode indexer",
+        SupertonicBase + "unicode_indexer.bin",
+        ModelPaths.SupertonicIndexer, 250_000);
+
+    public static ModelFile SupertonicVoice { get; } = new(
+        "Supertonic voice style",
+        SupertonicBase + "voice.bin",
+        ModelPaths.SupertonicVoice, 500_000);
+
     private const string SherpaBase =
         "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/resolve/main/";
 
@@ -62,6 +100,13 @@ public static class ModelDownloader
 
         if (VoiceAgent.Server.Pipeline.TtsFactory.IsKokoro)
             models.Add(Kokoro);
+
+        if (VoiceAgent.Server.Pipeline.TtsFactory.IsSupertonic)
+        {
+            models.AddRange([
+                SupertonicDurationPredictor, SupertonicTextEncoder, SupertonicVectorEstimator,
+                SupertonicVocoder, SupertonicConfig, SupertonicIndexer, SupertonicVoice]);
+        }
 
         return models;
     }

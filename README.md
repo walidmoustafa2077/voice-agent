@@ -115,17 +115,24 @@ dotnet run --project src/VoiceAgent.Server
 Both engines are offline and local. Only one runs at a time, and the selected engine is reported in
 `GET /api/config` under `models.stt`.
 
-Two TTS engines are available; the server picks one at startup.
+Three TTS engines are available; the server picks one at startup.
 
 | engine | default on | model | measured speed | voice |
 | ------ | ---------- | ----- | -------------- | ----- |
 | Windows SAPI | Windows | none (built into the OS) | ~0.1x realtime | dated but intelligible |
 | Kokoro `af_heart` | other OSes | `kokoro.onnx` (~325 MB) | ~1.1x idle, 2.0-3.7x during a live turn | natural |
+| Supertonic 3 `int8` | never (opt-in) | `models/supertonic` (~96 MB) | ~0.25x realtime (2 threads, 44.1 kHz) | near Kokoro |
 
 SAPI renders a sentence in well under a second on this CPU. Kokoro measures ~1.1x realtime in
 isolation but **2.0-3.7x during a live turn**, because the LLM stream, the recognizer and the VAD
 share the same four cores: a real session needed 8.6-29.6 s to synthesize 10-12 chunks. That is why
 SAPI is the default here. Choose Kokoro for the voice, accepting the wait:
+
+**Supertonic 3** is the middle ground: 0.25x realtime at 2 threads on this CPU (a 4.45 s sentence
+takes about 1.1 s to synthesize), 44.1 kHz, and a naturalness score within 0.07 of Kokoro on the
+published CPU benchmark. It runs through the sherpa-onnx runtime the recognizer already ships, so
+there is no extra native dependency. Select it with `VOICEAGENT_TTS=supertonic`; the first run
+downloads about 96 MB into `models/supertonic`.
 
 ```bash
 set VOICEAGENT_TTS=kokoro      # PowerShell: $env:VOICEAGENT_TTS="kokoro"
@@ -149,6 +156,7 @@ On a CPU-only machine the local stages dominate. Measured on the development mac
   second after the first sentence is known.
 - Kokoro, if selected, runs at ~1.1x realtime when idle but 2.0-3.7x while the rest of the turn is
   running, so its audio lags the text by many seconds.
+- Supertonic 3, if selected, synthesizes at ~0.25x realtime: a 4.45 s sentence in about 1.1 s.
 
 With SAPI, budget the **800 ms endpoint wait** plus a single-digit-millisecond flush, then the time
 it takes the remote model to produce its first token and the first sentence. A 20 s question is

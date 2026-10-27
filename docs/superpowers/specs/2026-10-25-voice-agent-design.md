@@ -277,6 +277,14 @@ Measured under a live turn, with the LLM stream, Kroko decode and Silero sharing
 at **2.03x and 3.72x realtime**, synthesizing 8.6 s, 18.4 s and 29.6 s of audio for 12, 2 and 10
 chunks. The isolated 1.1x benchmark does not survive contention, so Kokoro stays an opt-in and
 SAPI remains the default.
+
+Supertonic 3 (int8) was measured as a third, opt-in engine on the same machine: **0.25x realtime at
+2 threads** (0.36x at one; a third thread adds nothing), 44.1 kHz output, 96.5 MB of model files, and
+a published CPU naturalness score of 4.38 against Kokoro's 4.45. A 4.45 s sentence takes about
+1.1 s to synthesize. It runs through the `OfflineTts` runtime that sherpa-onnx already provides for
+the recognizer, so it adds no native dependency. It is not the default because SAPI is still an
+order of magnitude cheaper; it exists for the case where SAPI's voice is not acceptable and
+Kokoro's 2.0-3.7x under live load is too slow. Select it with `VOICEAGENT_TTS=supertonic`.
 Its thread sweep (same 67-char sentence, 4.05 s audio): 1 → 1.76×, 2 → 1.27×, 3 → 1.11×,
 4 → 1.16×, so 3 intra-op threads is the optimum on four cores.
 
@@ -378,7 +386,7 @@ Each milestone is runnable and observable.
 
 1. **Browser as audio pipe**, not console, because AEC is free there and CPU is scarce.
 2. **Whisper `tiny.en`** as the default, `base.en` behind a config flag.
-3. **TTS is Windows SAPI by default, Kokoro opt-in.** The benchmark forced this: Kokoro is
+3. **TTS is Windows SAPI by default; Kokoro and Supertonic 3 are opt-in.** The benchmark forced this: Kokoro is
    ~1.5× slower than realtime on four cores while SAPI is ~0.01×. G2 was narrowed from "we own
    every model" to "local and offline"; the voice quality trade-off is real and reversible with
    `VOICEAGENT_TTS=kokoro`. Kokoro keeps `af_heart` and 3 threads when selected.
