@@ -32,7 +32,14 @@ public static class TtsFactory
     public static ITtsService Create()
     {
         if (IsSupertonic)
-            return new SupertonicTtsService(ModelPaths.SupertonicDir);
+        {
+            // One thread by default: synthesis runs while the recognizer and the LLM need the
+            // same four cores, and a second thread only made the next utterance slower.
+            var threads = int.TryParse(Environment.GetEnvironmentVariable("VOICEAGENT_TTS_THREADS"), out var t)
+                ? Math.Clamp(t, 1, 4)
+                : 1;
+            return new SupertonicTtsService(ModelPaths.SupertonicDir, threads);
+        }
 
         if (IsKokoro || !OperatingSystem.IsWindows())
             return new TtsService(ModelPaths.Kokoro, threads: 3);
