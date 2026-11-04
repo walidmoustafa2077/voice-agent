@@ -5,3 +5,7 @@ debug/
 *.user
 .vs/
 .superpowers/
+
+# Detached server output (Start-Process redirects)
+server.out.log
+server.err.log
