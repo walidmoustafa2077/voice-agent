@@ -34,11 +34,14 @@ a CPU: the only models that run per turn are tiny, and the large model is remote
 dotnet run --project src/VoiceAgent.Server
 ```
 
-On startup the server downloads Silero VAD and Kroko's streaming Zipformer (encoder, decoder, joiner
-and token table) into `models/` if they are missing, about 75 MB in total. Whisper `tiny.en` is only
-downloaded when you select the fallback with `VOICEAGENT_STT=whisper`, and Kokoro only when you
-select it with `VOICEAGENT_TTS=kokoro`. It logs each file as it finishes. Downloads go to `*.part` files and are only moved into place after they pass a
-minimum-size sanity check, so a killed download cannot poison later runs.
+On startup the server checks every speech model this configuration needs and downloads the ones
+that are missing into `models/`. With the defaults that is Silero VAD and Kroko's streaming
+Zipformer (encoder, decoder, joiner and token table), about 75 MB in total. Whisper `tiny.en`,
+Supertonic and Kokoro are only fetched when you select them with `VOICEAGENT_STT` /
+`VOICEAGENT_TTS`, because the engine for that mode is the only one opened. The log names each
+missing file before downloading it and reports its size when it lands. Downloads go to `*.part`
+files and are only moved into place after they pass a minimum-size sanity check, so a killed
+download cannot poison later runs.
 
 Then open <http://localhost:5192>, click **Start microphone**, and allow microphone access.
 `localhost` counts as a secure context, so no certificate is needed.

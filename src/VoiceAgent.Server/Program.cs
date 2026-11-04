@@ -23,10 +23,41 @@ var app = builder.Build();
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ModelDownloader");
 using var models = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
 
-foreach (var model in VoiceAgent.Server.ModelDownloader.Required)
+// A fresh clone has no models at all. Fetch whatever this configuration needs before anything
+// tries to open a file; EnsureAsync skips every file that is already complete, so a warm start
+// is just a handful of stat calls and nothing else.
+var required = VoiceAgent.Server.ModelDownloader.Required;
+var missing = required.Where(model => !model.IsReady).ToList();
+
+if (missing.Count == 0)
 {
-    await VoiceAgent.Server.ModelDownloader.EnsureAsync(
-        model, models, logger, CancellationToken.None);
+    logger.LogInformation("all {Count} speech model files present", required.Count);
+}
+else
+{
+    logger.LogInformation(
+        "first run: {Missing} of {Count} speech model files missing, downloading into {Root}",
+        missing.Count, required.Count, VoiceAgent.Server.ModelPaths.Root);
+
+    for (var i = 0; i < missing.Count; i++)
+    {
+        var model = missing[i];
+        logger.LogInformation("({Index}/{Count}) {Name} -> {Path}",
+            i + 1, missing.Count, model.Name, model.Path);
+        try
+        {
+            await VoiceAgent.Server.ModelDownloader.EnsureAsync(
+                model, models, logger, CancellationToken.None);
+        }
+        catch (Exception error)
+        {
+            logger.LogError(error,
+                "{Name} could not be downloaded. Check the connection and start again; the partial " +
+                "file was removed, so the next attempt restarts this model from the beginning.",
+                model.Name);
+            throw;
+        }
+    }
 }
 
 // Pay the ONNX graph construction and first-inference cost once, in the background, so the

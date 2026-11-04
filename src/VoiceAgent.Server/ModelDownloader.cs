@@ -90,12 +90,18 @@ public static class ModelDownloader
 
     private static IReadOnlyList<ModelFile> BuildRequired()
     {
-        var models = new List<ModelFile> { Silero, Whisper };
+        var models = new List<ModelFile> { Silero };
 
+        // Fetch only the recognizer this process was told to use: a default (streaming) start
+        // should not pull 78 MB of Whisper that it will never open.
         if (VoiceAgent.Server.Pipeline.SttFactory.Mode ==
             VoiceAgent.Server.Pipeline.SttMode.Streaming)
         {
             models.AddRange([SherpaEncoder, SherpaDecoder, SherpaJoiner, SherpaTokens]);
+        }
+        else
+        {
+            models.Add(Whisper);
         }
 
         if (VoiceAgent.Server.Pipeline.TtsFactory.IsKokoro)
